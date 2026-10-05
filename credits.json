@@ -1,0 +1,56 @@
+{
+  "sources": [
+    "assets/screens.rpy",
+    "assets/credits.rpy",
+    "assets/tl.rpy",
+    "assets/images/names1.png",
+    "assets/images/names2.png",
+    "assets/images/names3.png"
+  ],
+  "pages": [
+    {
+      "heading": "Starry Flowers 1.7.4",
+      "body": "A visual novel about two witch boys falling in love 💙\n\nStory + Art + Music\nNomnomNami\nhttps://nomnomnami.com/\n\nEnding Theme - \"Pretty in Pink\"\nMarlene Bellissimo"
+    },
+    {
+      "heading": "Translations",
+      "body": "Spanish — rinphonny\nFrench — Yuri Akuto\nGerman — Antonio Moss\nItalian — Rypher\nPolish — Nika Klag\nBrazilian Portuguese — Fah Braccini\nRussian — Zweelee"
+    },
+    {
+      "heading": "Translations",
+      "body": "Ukrainian — storyteller613\nTurkish — Naamk\nSimplified Chinese — Gu Lyencha\nKorean — KyleHeren\nVietnamese — Bánh\nThai — Whateverzone"
+    },
+    {
+      "heading": "Testing and Feedback",
+      "body": "Animoose\nchunderfins\ncloverfirefly\nDarkChibiShadow\nFah Braccini\njacob\nKyleHeren"
+    },
+    {
+      "heading": "Testing and Feedback",
+      "body": "LydianChord\nNiku\nnpckc\nPivi\nTangledVirus\nxionvee"
+    },
+    {
+      "heading": "Special Thanks",
+      "body": "bryn\ncosmicApproach\nfunami\nHaloMillennium\nJaime Scribbles\nKoko\nMabs"
+    },
+    {
+      "heading": "Special Thanks",
+      "body": "MEATSHED\nmossinasi\nNova\nPlushMayhem\nPyTom\nRoxie\nStomachGod"
+    },
+    {
+      "heading": "Supported by Patrons",
+      "body": "areforever\nbaa baa black goat\nCasey\nDamyix\nExplosive Kieran\nFaye DeForêt\nGrievance"
+    },
+    {
+      "heading": "Supported by Patrons",
+      "body": "IngYa\nKayla Cavanaugh\nLuna\nMalkavio\nNiko\nPaul Reust\nRadsjet"
+    },
+    {
+      "heading": "Supported by Patrons",
+      "body": "Sam Caesar\nTassia Turney"
+    },
+    {
+      "heading": "Made with Ren'Py",
+      "body": "Original game engine: Ren'Py\nhttps://www.renpy.org/\n\nThis adaptation runs on Rust.\nThe original engine license is included\nas RENPY-LICENSE.txt."
+    }
+  ]
+}

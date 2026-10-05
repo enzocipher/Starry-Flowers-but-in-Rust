@@ -35,8 +35,15 @@ pub struct InlineSymbol {
     pub baseline_top: f32,
     pub tint: bool,
 }
+#[derive(Clone, Deserialize, Debug)]
+pub struct CreditPage {
+    pub heading: String,
+    pub body: String,
+}
 #[derive(Deserialize)]
 pub struct Story {
+    #[serde(default)]
+    pub credits: Vec<CreditPage>,
     pub ops: Vec<Op>,
     pub labels: HashMap<String, usize>,
     pub images: HashMap<String, String>,
@@ -393,6 +400,17 @@ pub fn clean_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn about_preserves_original_credit_groups() {
+        let story = Story::load();
+        let text = story.credits.iter().map(|c| format!("{}\n{}", c.heading, c.body)).collect::<Vec<_>>().join("\n");
+        for name in ["NomnomNami","Marlene Bellissimo","rinphonny","Yuri Akuto","Antonio Moss","Rypher","Nika Klag","Fah Braccini","Zweelee","storyteller613","Naamk","Gu Lyencha","KyleHeren","Bánh","Whateverzone","Animoose","xionvee","PyTom","StomachGod","Faye DeForêt","Tassia Turney"] {
+            assert!(text.contains(name), "Missing original credit: {}", name);
+        }
+        assert_eq!(story.credits.iter().filter(|p| p.heading == "Translations").count(), 2);
+        assert!(text.contains("Testing and Feedback") && text.contains("Special Thanks") && text.contains("Supported by Patrons"));
+    }
+
     #[test]
     fn original_inline_symbols_resolve_for_story_and_translations() {
         let story = Story::load();

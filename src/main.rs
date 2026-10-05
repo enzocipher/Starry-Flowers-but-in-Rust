@@ -1036,6 +1036,7 @@ async fn main() {
     let mut notice_until = 0.;
     let mut gallery_index = 0usize;
     let mut history_offset = 0usize;
+    let mut about_index = 0usize;
     let mut fullscreen = prefs.fullscreen;
     if fullscreen {
         set_fullscreen(true);
@@ -1132,6 +1133,15 @@ async fn main() {
                 page = Page::Settings;
             }
             "language" => page = Page::Language,
+            "about" => page = Page::About,
+            "about-translations" => {
+                page = Page::About;
+                about_index = 1;
+            }
+            "about-patrons" => {
+                page = Page::About;
+                about_index = 7;
+            }
             "shake" => {
                 while state.effect != "vpunch" {
                     stop = state.run(&story);
@@ -1746,7 +1756,36 @@ async fn main() {
                 art.wrap("Enter / Space / Click: advance dialogue.\nCtrl: skip read text. Tab: toggle skipping.\nLeft / Backspace / Mouse wheel up: rollback.\nEscape / Right click: game menu. F11: fullscreen.\nH: hide dialogue.\nOptions: text speed, auto-forward and audio.",370.,165.,800.,28);
             } else if page == Page::About {
                 art.text(&story.translate("About", &prefs.lang), 60., 70., 40, BLUE);
-                art.wrap("Starry Flowers 1.7.4\n\nStory, art and music by NomnomNami.\nEnding theme: Pretty in Pink by Marlene Bellissimo.\n\nOriginal game created with Ren'Py.\nThis local adaptation runs on Rust.",370.,165.,800.,28);
+                let count = story.credits.len();
+                if count > 0 {
+                    if button(&art, "Previous", Rect::new(370., 610., 240., 50.))
+                        || is_key_pressed(KeyCode::Left)
+                    {
+                        about_index = (about_index + count - 1) % count;
+                    }
+                    if button(&art, "Next", Rect::new(910., 610., 240., 50.))
+                        || is_key_pressed(KeyCode::Right)
+                    {
+                        about_index = (about_index + 1) % count;
+                    }
+                    let credit = &story.credits[about_index % count];
+                    art.label(
+                        &story.translate(&credit.heading, &prefs.lang),
+                        370.,
+                        145.,
+                        790.,
+                        32,
+                        BLUE,
+                    );
+                    art.wrap(&credit.body, 370., 198., 790., 26);
+                    art.text(
+                        &format!("{} / {}", about_index + 1, count),
+                        710.,
+                        625.,
+                        24,
+                        INK,
+                    );
+                }
             } else if page == Page::History {
                 art.text(&story.translate("History", &prefs.lang), 60., 70., 40, BLUE);
                 let start = history.len().saturating_sub(5 + history_offset);
