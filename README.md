@@ -1,5 +1,7 @@
 # Starry Flowers — port local a Rust para Windows
 
+En la rama `dev-psp`, el port nativo para PSP y las instrucciones de ISO están en [psp/README.md](psp/README.md). Windows permanece en `dev` y `master`.
+
 Adaptación del juego Starry Flowers 1.7.4 de NomnomNami. Ejecuta la historia con un motor nativo en Rust y Macroquad: no utiliza Python ni Ren'Py en tiempo de ejecución. Los textos, ilustraciones, música y traducciones proceden de la copia original de esta carpeta.
 
 "Es el mismo juego, pero una versión inferior"

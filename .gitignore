@@ -4,3 +4,8 @@
 /dist/
 /smoke*.png
 __pycache__/
+/psp/target/
+/psp/dist/
+/psp/story.json
+/psp/build.log
+/psp/test-emulator/

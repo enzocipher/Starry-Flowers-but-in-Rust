@@ -1,0 +1,16 @@
+{
+  "accessory_screens": 8,
+  "audio_blocks": 562,
+  "decisions": 2,
+  "dialogues": 4781,
+  "endings": 2,
+  "extras": 8,
+  "passed": true,
+  "save_reload": true,
+  "settings_overwrite": true,
+  "emulator": "PPSSPP 1.20.4 Windows x64",
+  "emulated_model": "PSP-1000 / 32 MiB",
+  "physical_hardware_tested": false,
+  "toolchain": "rustc 1.101.0-nightly (282215592 2026-10-04)",
+  "heap_mib": 16
+}
