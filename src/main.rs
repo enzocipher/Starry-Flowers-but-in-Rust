@@ -126,6 +126,7 @@ struct Art {
     layouts: std::cell::RefCell<HashMap<layout::Key, Vec<layout::Line>>>,
     textures: HashMap<String, Texture2D>,
     font: Font,
+    inline_symbols: HashMap<char, InlineSymbol>,
     sounds: HashMap<String, Sound>,
     music: String,
     stamps: HashMap<String, (String, f64)>,
@@ -371,55 +372,96 @@ impl Art {
         }
     }
     fn text_width(&self, text: &str, size: u16) -> f32 {
-        text.split('💙')
-            .map(|part| measure_text(part, Some(&self.font), size, 1.).width)
-            .sum::<f32>()
-            + text.matches('💙').count() as f32 * size as f32 * 0.85
+        let mut width = 0.;
+        let mut run = String::new();
+        for c in text.chars() {
+            if c == '\u{fe0f}' {
+                continue;
+            }
+            if let Some(symbol) = self.inline_symbols.get(&c) {
+                width += measure_text(&run, Some(&self.font), size, 1.).width
+                    + symbol.advance * size as f32;
+                run.clear();
+            } else {
+                run.push(c);
+            }
+        }
+        width + measure_text(&run, Some(&self.font), size, 1.).width
     }
     fn text(&self, s: &str, x: f32, y: f32, size: u16, color: Color) {
-        if s.contains('💙') {
-            let mut cursor = x;
-            for (index, part) in s.split('💙').enumerate() {
-                if index > 0 {
-                    let scale = size as f32;
-                    let center = vec2(cursor + scale * 0.425, y - scale * 0.40);
-                    let point = |step: usize| {
-                        let t = step as f32 * std::f32::consts::TAU / 64.;
-                        center
-                            + vec2(
-                                16. * t.sin().powi(3),
-                                -(13. * t.cos()
-                                    - 5. * (2. * t).cos()
-                                    - 2. * (3. * t).cos()
-                                    - (4. * t).cos()),
-                            ) * (scale * 0.024)
-                    };
-                    for step in 0..64 {
-                        draw_triangle(
-                            center,
-                            point(step),
-                            point(step + 1),
-                            Color::from_rgba(88, 163, 255, (color.a * 255.) as u8),
-                        );
-                    }
-                    cursor += scale * 0.85;
-                }
-                self.text(part, cursor, y, size, color);
-                cursor += measure_text(part, Some(&self.font), size, 1.).width;
+        let mut cursor = x;
+        let mut run = String::new();
+        let draw_run = |run: &str, cursor: f32| {
+            draw_text_ex(
+                run,
+                cursor,
+                y,
+                TextParams {
+                    font: Some(&self.font),
+                    font_size: size,
+                    color,
+                    ..Default::default()
+                },
+            );
+        };
+        for c in s.chars() {
+            if c == '\u{fe0f}' {
+                continue;
             }
-            return;
+            if let Some(symbol) = self.inline_symbols.get(&c) {
+                draw_run(&run, cursor);
+                cursor += measure_text(&run, Some(&self.font), size, 1.).width;
+                run.clear();
+                if let Some(texture) = self.textures.get(&symbol.image) {
+                    draw_texture_ex(
+                        texture,
+                        cursor,
+                        y + symbol.baseline_top * size as f32,
+                        if symbol.tint {
+                            color
+                        } else {
+                            Color::new(1., 1., 1., color.a)
+                        },
+                        DrawTextureParams {
+                            dest_size: Some(vec2(
+                                symbol.width * size as f32,
+                                symbol.height * size as f32,
+                            )),
+                            ..Default::default()
+                        },
+                    );
+                }
+                cursor += symbol.advance * size as f32;
+            } else {
+                run.push(c);
+            }
         }
-        draw_text_ex(
-            s,
-            x,
-            y,
-            TextParams {
-                font: Some(&self.font),
-                font_size: size,
-                color,
-                ..Default::default()
-            },
-        );
+        draw_run(&run, cursor);
+    }
+    fn image_progress(&self, name: &str, r: Rect, fraction: f32) {
+        if let Some(t) = self.textures.get(name) {
+            let f = fraction.clamp(0., 1.);
+            if f > 0. {
+                draw_texture_ex(
+                    t,
+                    r.x,
+                    r.y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(r.w * f, r.h)),
+                        source: Some(Rect::new(0., 0., t.width() * f, t.height())),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    fn label(&self, text: &str, x: f32, y: f32, width: f32, size: u16, color: Color) {
+        let size = (14..=size)
+            .rev()
+            .find(|size| self.text_width(text, *size) <= width)
+            .unwrap_or(14);
+        self.text(text, x, y, size, color);
     }
     fn wrap(&self, s: &str, x: f32, y: f32, width: f32, size: u16) -> f32 {
         let lines = self.lines(s, width, size);
@@ -932,6 +974,7 @@ async fn main() {
         layouts: std::cell::RefCell::new(HashMap::new()),
         textures: HashMap::new(),
         font,
+        inline_symbols: story.inline_symbols.clone(),
         sounds: HashMap::new(),
         music: String::new(),
         stamps: HashMap::new(),
@@ -963,6 +1006,21 @@ async fn main() {
         "ui textbox",
         "ui namebox",
         "ui nvl",
+    ] {
+        art.ensure(name, &story).await;
+    }
+    for symbol in story.inline_symbols.values() {
+        art.ensure(&symbol.image, &story).await;
+    }
+    for name in [
+        "ui slider/horizontal_idle_bar",
+        "ui slider/horizontal_idle_bar2",
+        "ui slider/horizontal_hover_bar",
+        "ui slider/horizontal_hover_bar2",
+        "ui button/radio_foreground",
+        "ui button/radio_selected_foreground",
+        "ui button/check_foreground",
+        "ui button/check_selected_foreground",
     ] {
         art.ensure(name, &story).await;
     }
@@ -1065,7 +1123,14 @@ async fn main() {
         page = Page::Game;
         match smoke_mode.as_str() {
             "title" => page = Page::Title,
-            "settings" => page = Page::Settings,
+            "settings" | "settings-en" | "settings-es" => {
+                if smoke_mode == "settings-en" {
+                    prefs.lang.clear();
+                } else if smoke_mode == "settings-es" {
+                    prefs.lang = "es".into();
+                }
+                page = Page::Settings;
+            }
             "language" => page = Page::Language,
             "shake" => {
                 while state.effect != "vpunch" {
@@ -1085,46 +1150,21 @@ async fn main() {
                     stop = state.run(&story);
                 }
             }
-            "heart" => {
-                state.who = "w".into();
-                state.nvl_mode = false;
-                state.text = story
+            "heart" | "heart-red" | "heart-brown" => {
+                let c = match smoke_mode.as_str() {
+                    "heart-red" => '\u{2764}',
+                    "heart-brown" => '\u{1f90e}',
+                    _ => '\u{1f499}',
+                };
+                let op = story
                     .ops
                     .iter()
-                    .find(|op| op.op == "say" && op.text.contains('💙'))
-                    .unwrap()
-                    .text
-                    .clone();
-                stop = Stop::Say;
-            }
-            "long-text" => {
-                state.who = "p".into();
-                state.nvl_mode = false;
-                let longest = story
-                    .ops
-                    .iter()
-                    .filter(|op| op.op == "say" && !op.who.is_empty() && op.who != "centered")
-                    .max_by_key(|op| story.translate(&op.text, &prefs.lang).chars().count())
+                    .find(|op| op.op == "say" && op.text.contains(c))
                     .unwrap();
-                state.text = longest.text.clone();
-                stop = Stop::Say;
-            }
-            "narration" => {
-                state.nvl_mode = true;
-                state.who.clear();
-                let mut paragraphs: Vec<_> = story
-                    .ops
-                    .iter()
-                    .filter(|op| op.op == "say" && op.who.is_empty())
-                    .collect();
-                paragraphs.sort_by_key(|op| std::cmp::Reverse(op.text.chars().count()));
-                state.nvl = paragraphs
-                    .iter()
-                    .take(6)
-                    .map(|op| op.text.clone())
-                    .collect();
-                state.text = state.nvl.last().unwrap().clone();
-                stop = Stop::Say;
+                state.who = op.who.clone();
+                state.text = op.text.clone();
+                state.attrs = op.attrs.clone();
+                state.nvl_mode = false;
             }
             "gallery" => {
                 prefs.clear = true;
@@ -1225,17 +1265,7 @@ async fn main() {
         }
         if page == Page::Title {
             state.music = "romance".into();
-            art.image(
-                if prefs.clear {
-                    "bg starfield"
-                } else {
-                    "ui main_menu"
-                },
-                0.,
-                0.,
-                1280.,
-                720.,
-            );
+            art.image("bg starfield", 0., -560., 1280., 1280.);
             art.particles("mmblossoms", &story).await;
             art.image("titlelogo", 280., 72., 720., 360.);
 
