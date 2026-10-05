@@ -1,0 +1,416 @@
+//! GPU sprites retain source texture resolution, including in PPSSPP.
+//! Three 512x272 RGBA surfaces fit in PSP VRAM: reusable scene prefix (0),
+//! display (1), and complete scene (2). Cached surfaces use RGB sampling:
+//! PSP framebuffer alpha stores stencil and is not ordinary image alpha.
+//! Finish the GE list before evicting textures or reusing list memory.
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
+use core::{ffi::c_void, ptr};
+use psp::sys::*;
+#[repr(C, align(16))]
+#[derive(Clone)]
+struct Block([u8; 16]);
+#[derive(Clone)]
+pub struct Draw {
+    pub file: String,
+    pub tw: usize,
+    pub th: usize,
+    pub font: bool,
+    pub xy: [f32; 4],
+    pub uv: [f32; 4],
+    pub color: u32,
+}
+#[derive(Clone)]
+pub struct Frame {
+    pub clear: u32,
+    pub draws: Vec<Draw>,
+    pub scene_len: usize,
+    pub prefix_len: usize,
+    pub prefix_sealed: bool,
+}
+impl Frame {
+    pub fn new() -> Self {
+        Self {
+            clear: 0xff000000,
+            draws: Vec::new(),
+            scene_len: 0,
+            prefix_len: 0,
+            prefix_sealed: false,
+        }
+    }
+    pub fn fill(&mut self, c: u32) {
+        self.clear = c;
+        self.draws.clear();
+        self.scene_len = 0;
+        self.prefix_len = 0;
+        self.prefix_sealed = false;
+    }
+    pub fn fade_from(&mut self, old: &Self, alpha: u32) {
+        self.scene_len = 0;
+        self.prefix_len = 0;
+        self.prefix_sealed = false;
+        let mut draws = old.draws.clone();
+        for d in &mut self.draws {
+            d.color = (d.color & 0xffffff) | (((d.color >> 24) * alpha / 255) << 24);
+        }
+        draws.append(&mut self.draws);
+        self.draws = draws;
+    }
+    pub fn offset(&mut self, x: i32, y: i32) {
+        self.scene_len = 0;
+        self.prefix_len = 0;
+        self.prefix_sealed = false;
+        for d in &mut self.draws {
+            d.xy[0] += x as f32;
+            d.xy[2] += x as f32;
+            d.xy[1] += y as f32;
+            d.xy[3] += y as f32;
+        }
+    }
+}
+struct Cached {
+    data: Vec<Block>,
+    used: u64,
+}
+pub struct Gpu {
+    list: Vec<Block>,
+    palette: Vec<Block>,
+    cache: BTreeMap<String, Cached>,
+    clock: u64,
+    queued: usize,
+    scene_key: u64,
+    prefix_key: u64,
+}
+#[repr(C)]
+struct Vertex {
+    u: f32,
+    v: f32,
+    color: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+}
+impl Gpu {
+    pub fn new() -> Self {
+        let mut palette = vec![Block([0; 16]); 64];
+        for i in 0..256 {
+            palette[i / 4].0[(i % 4) * 4..(i % 4 + 1) * 4]
+                .copy_from_slice(&((i as u32) << 24 | 0xffffff).to_le_bytes());
+        }
+        let mut s = Self {
+            list: vec![Block([0; 16]); 16384],
+            palette,
+            cache: BTreeMap::new(),
+            clock: 0,
+            queued: 0,
+            scene_key: 0,
+            prefix_key: 0,
+        };
+        unsafe {
+            sceGuInit();
+            sceKernelDcacheWritebackAll();
+            s.start(0);
+            sceGuDrawBuffer(DisplayPixelFormat::Psm8888, ptr::null_mut(), 512);
+            sceGuDispBuffer(480, 272, ptr::null_mut(), 512);
+            sceGuOffset(2048 - 240, 2048 - 136);
+            sceGuViewport(2048, 2048, 480, 272);
+            sceGuScissor(0, 0, 480, 272);
+            sceGuEnable(GuState::ScissorTest);
+            sceGuDisable(GuState::DepthTest);
+            sceGuDisable(GuState::CullFace);
+            sceGuDisable(GuState::Dither);
+            sceGuEnable(GuState::Blend);
+            sceGuBlendFunc(
+                BlendOp::Add,
+                BlendFactor::SrcAlpha,
+                BlendFactor::OneMinusSrcAlpha,
+                0,
+                0,
+            );
+            sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
+            sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
+            sceGuTexScale(1., 1.);
+            sceGuTexOffset(0., 0.);
+            s.finish();
+            sceGuDisplay(true);
+        }
+        s
+    }
+    unsafe fn start(&mut self, buffer: usize) {
+        sceGuStart(GuContextType::Direct, self.list.as_mut_ptr().cast());
+        sceGuDrawBufferList(
+            DisplayPixelFormat::Psm8888,
+            (buffer * 512 * 272 * 4) as *mut c_void,
+            512,
+        );
+        self.queued = 0;
+    }
+    unsafe fn finish(&mut self) {
+        sceGuFinish();
+        sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+    }
+    pub fn present(&mut self, frame: &Frame, root: &str, buffer: usize) {
+        if frame.scene_len > 0 {
+            let mut key = frame.clear as u64;
+            for d in &frame.draws[..frame.scene_len] {
+                for b in d
+                    .file
+                    .bytes()
+                    .chain(d.xy.iter().flat_map(|v| v.to_bits().to_le_bytes()))
+                    .chain(d.uv.iter().flat_map(|v| v.to_bits().to_le_bytes()))
+                    .chain(d.color.to_le_bytes())
+                {
+                    key = (key ^ b as u64).wrapping_mul(1099511628211);
+                }
+            }
+            if key != self.scene_key {
+                let mut scene = Frame::new();
+                scene.clear = frame.clear;
+                if frame.prefix_len > 0 {
+                    let mut prefix_key = frame.clear as u64;
+                    for d in &frame.draws[..frame.prefix_len] {
+                        for b in d
+                            .file
+                            .bytes()
+                            .chain(d.xy.iter().flat_map(|v| v.to_bits().to_le_bytes()))
+                            .chain(d.uv.iter().flat_map(|v| v.to_bits().to_le_bytes()))
+                            .chain(d.color.to_le_bytes())
+                        {
+                            prefix_key = (prefix_key ^ b as u64).wrapping_mul(1099511628211);
+                        }
+                    }
+                    if prefix_key != self.prefix_key {
+                        let mut prefix = Frame::new();
+                        prefix.clear = frame.clear;
+                        prefix.draws = frame.draws[..frame.prefix_len].to_vec();
+                        self.draw(&prefix, root, 0);
+                        self.prefix_key = prefix_key;
+                    }
+                    for (top, height) in [(0, 256), (256, 16)] {
+                        scene.draws.push(Draw {
+                            file: if top == 0 { "@prefix" } else { "@prefixbottom" }.into(),
+                            tw: 512,
+                            th: if top == 0 { 256 } else { 32 },
+                            font: false,
+                            xy: [0., top as f32, 480., (top + height) as f32],
+                            uv: [0., 0., 480., height as f32],
+                            color: 0xffffffff,
+                        });
+                    }
+                    scene
+                        .draws
+                        .extend_from_slice(&frame.draws[frame.prefix_len..frame.scene_len]);
+                } else {
+                    scene.draws = frame.draws[..frame.scene_len].to_vec();
+                }
+                self.draw(&scene, root, 2);
+                self.scene_key = key;
+            }
+            let mut composed = Frame::new();
+            for (top, height) in [(0, 256), (256, 16)] {
+                composed.draws.push(Draw {
+                    file: if top == 0 { "@scene" } else { "@bottom" }.into(),
+                    tw: 512,
+                    th: if top == 0 { 256 } else { 32 },
+                    font: false,
+                    xy: [0., top as f32, 480., (top + height) as f32],
+                    uv: [0., 0., 480., height as f32],
+                    color: 0xffffffff,
+                });
+            }
+            composed
+                .draws
+                .extend_from_slice(&frame.draws[frame.scene_len..]);
+            self.draw(&composed, root, buffer);
+        } else {
+            self.draw(frame, root, buffer);
+        }
+        unsafe {
+            sceDisplayWaitVblankStart();
+            sceDisplaySetFrameBuf(
+                (0x44000000usize + buffer * 512 * 272 * 4) as *const u8,
+                512,
+                DisplayPixelFormat::Psm8888,
+                DisplaySetBufSync::Immediate,
+            );
+        }
+    }
+    fn draw(&mut self, frame: &Frame, root: &str, buffer: usize) {
+        unsafe {
+            self.start(buffer);
+            sceGuClearColor(frame.clear);
+            sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+            for d in &frame.draws {
+                if self.queued > 400 {
+                    self.finish();
+                    self.start(buffer);
+                }
+                if d.file.starts_with("@") {
+                    sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgb);
+                    sceGuEnable(GuState::Texture2D);
+                    sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 0);
+                    sceGuTexImage(
+                        MipmapLevel::None,
+                        512,
+                        d.th as i32,
+                        512,
+                        ((if d.file.starts_with("@prefix") {
+                            0x04000000usize
+                        } else {
+                            0x04110000usize
+                        }) + if d.file.ends_with("bottom") || d.file == "@bottom" {
+                            256 * 512 * 4
+                        } else {
+                            0
+                        }) as *const c_void,
+                    );
+                    sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
+                    sceGuTexFlush();
+                } else if !d.file.is_empty() {
+                    sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
+                    if !self.cache.contains_key(&d.file) {
+                        self.finish();
+                        while self
+                            .cache
+                            .values()
+                            .map(|c| c.data.len() * 16)
+                            .sum::<usize>()
+                            > 4 * 1024 * 1024
+                        {
+                            let key = self
+                                .cache
+                                .iter()
+                                .min_by_key(|(_, v)| v.used)
+                                .map(|(k, _)| k.clone())
+                                .unwrap();
+                            self.cache.remove(&key);
+                        }
+                        if let Ok(bytes) = crate::io::read(alloc::format!("{root}/DATA/{}", d.file))
+                        {
+                            let bytes = if d.file.ends_with(".ZTX") {
+                                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+                                    &bytes,
+                                    512 * 512 * 4 * 21 / 16,
+                                )
+                                .expect("Invalid texture")
+                            } else {
+                                bytes
+                            };
+                            let mut data = vec![Block([0; 16]); (bytes.len() + 15) / 16];
+                            ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                data.as_mut_ptr().cast(),
+                                bytes.len(),
+                            );
+                            sceKernelDcacheWritebackAll();
+                            self.cache.insert(
+                                d.file.clone(),
+                                Cached {
+                                    data,
+                                    used: self.clock,
+                                },
+                            );
+                        }
+                        self.start(buffer);
+                    }
+                    let Some(c) = self.cache.get_mut(&d.file) else {
+                        continue;
+                    };
+                    self.clock += 1;
+                    c.used = self.clock;
+                    let data = c.data.as_ptr().cast::<u8>();
+                    sceGuEnable(GuState::Texture2D);
+                    if d.font {
+                        sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 0);
+                        sceGuClutMode(ClutPixelFormat::Psm8888, 0, 255, 0);
+                        sceGuClutLoad(32, self.palette.as_ptr().cast());
+                        sceGuTexImage(
+                            MipmapLevel::None,
+                            d.tw as i32,
+                            d.th as i32,
+                            d.tw as i32,
+                            data.cast(),
+                        );
+                        sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
+                    } else {
+                        sceGuTexMode(TexturePixelFormat::Psm8888, 2, 0, 0);
+                        let mut offset = 0;
+                        for (l, level) in
+                            [MipmapLevel::None, MipmapLevel::Level1, MipmapLevel::Level2]
+                                .into_iter()
+                                .enumerate()
+                        {
+                            let w = d.tw >> l;
+                            let h = d.th >> l;
+                            sceGuTexImage(
+                                level,
+                                w as i32,
+                                h as i32,
+                                w as i32,
+                                data.add(offset).cast(),
+                            );
+                            offset += w * h * 4;
+                        }
+                        sceGuTexLevelMode(TextureLevelMode::Auto, 0.);
+                        sceGuTexFilter(TextureFilter::LinearMipmapLinear, TextureFilter::Linear);
+                    }
+                    sceGuTexFlush();
+                } else {
+                    sceGuDisable(GuState::Texture2D);
+                }
+                let vertices =
+                    sceGuGetMemory((core::mem::size_of::<Vertex>() * 2) as i32) as *mut Vertex;
+                vertices.write(Vertex {
+                    u: d.uv[0],
+                    v: d.uv[1],
+                    color: d.color,
+                    x: d.xy[0],
+                    y: d.xy[1],
+                    z: 0.,
+                });
+                vertices.add(1).write(Vertex {
+                    u: d.uv[2],
+                    v: d.uv[3],
+                    color: d.color,
+                    x: d.xy[2],
+                    y: d.xy[3],
+                    z: 0.,
+                });
+                sceGuDrawArray(
+                    GuPrimitive::Sprites,
+                    VertexType::TEXTURE_32BITF
+                        | VertexType::COLOR_8888
+                        | VertexType::VERTEX_32BITF
+                        | VertexType::TRANSFORM_2D,
+                    2,
+                    ptr::null(),
+                    vertices.cast(),
+                );
+                self.queued += 1;
+            }
+            self.finish();
+        }
+    }
+    pub fn pixels(&mut self, buffer: usize) -> Vec<u32> {
+        let mut pixels = vec![0u32; 480 * 272];
+        unsafe {
+            sceKernelDcacheWritebackAll();
+            self.start(buffer);
+            sceGuCopyImage(
+                DisplayPixelFormat::Psm8888,
+                0,
+                0,
+                480,
+                272,
+                512,
+                (0x04000000usize + buffer * 512 * 272 * 4) as *mut c_void,
+                0,
+                0,
+                480,
+                pixels.as_mut_ptr().cast(),
+            );
+            self.finish();
+            sceKernelDcacheInvalidateRange(pixels.as_mut_ptr().cast(), 480 * 272 * 4);
+        }
+        pixels
+    }
+}

@@ -28,6 +28,11 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
                         let restored: State = load("AUDIT-SLOT").expect("Save reload failed");
                         assert_eq!(restored.pc, state.pc);
                         assert_eq!(restored.text, state.text);
+                        let mut heart = state.clone();
+                        heart.text = format!("{} \u{1f499}", heart.text);
+                        renderer.scene(&heart, story);
+                        renderer.dialogue(&heart, story, "", usize::MAX);
+                        screenshot(renderer, "PSP-HEART");
                         sample = true;
                     }
                     if lines % 200 == 0 {
@@ -44,6 +49,10 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
                 Stop::Dress => {
                     outfits += 1;
                     state.acc = [branch; 3];
+                    if outfits == 1 || outfits == 5 {
+                        crate::dress_scene(renderer, &state, story);
+                        screenshot(renderer, &format!("PSP-ACCESSORIES-{branch}"));
+                    }
                 }
                 Stop::End => {
                     finishes += 1;
@@ -85,6 +94,23 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     let restored: Prefs = load("AUDIT-PREFS").unwrap();
     assert_eq!(restored.lang, "es");
     assert_eq!(restored.read, prefs.read);
+    crate::menu(
+        renderer,
+        "Settings",
+        &vec![
+            "Language: English".into(),
+            "Text speed: 40".into(),
+            "Auto time: 3".into(),
+            "Music volume: 100%".into(),
+            "Sound volume: 100%".into(),
+            "Skip unseen text: false".into(),
+            "Skip after choices: false".into(),
+            "Skip transitions: false".into(),
+            "Return".into(),
+        ],
+        0,
+    );
+    screenshot(renderer, "PSP-SETTINGS");
     renderer.frame.fill(0xffffffff);
     renderer.text("PSP audit passed", 25, 25, 18, INK);
     renderer.text(

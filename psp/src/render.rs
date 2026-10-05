@@ -15,29 +15,38 @@ pub const WHITE: u32 = 0xff_ffffff;
 pub const BLUE: u32 = 0xffffa358;
 
 #[derive(Clone, Deserialize)]
-pub struct ImageInfo {
+pub struct Tile {
     pub file: String,
-    pub width: usize,
-    pub height: usize,
-    pub original_width: usize,
-    pub original_height: usize,
-}
-#[derive(Deserialize)]
-pub struct Glyph {
     pub x: usize,
     pub y: usize,
     pub width: usize,
     pub height: usize,
+    pub texture_width: usize,
+    pub texture_height: usize,
+}
+#[derive(Clone, Deserialize)]
+pub struct ImageInfo {
+    pub width: usize,
+    pub height: usize,
+    pub original_width: usize,
+    pub original_height: usize,
+    pub tiles: Vec<Tile>,
+}
+#[derive(Deserialize)]
+pub struct Glyph {
+    pub file: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub left: f32,
+    pub top: f32,
     pub advance: f32,
 }
 #[derive(Deserialize)]
 pub struct Font {
-    pub file: String,
-    pub width: usize,
-    pub height: usize,
+    pub scale: f32,
     pub glyphs: HashMap<char, Glyph>,
-    #[serde(skip)]
-    pub data: Vec<u8>,
 }
 #[derive(Deserialize)]
 pub struct Manifest {
@@ -45,78 +54,25 @@ pub struct Manifest {
     pub fonts: HashMap<String, Font>,
     pub audio: HashMap<String, String>,
 }
-pub struct Texture {
-    pub info: ImageInfo,
-    pub data: Vec<u8>,
-}
 pub struct Renderer {
-    pub frame: Vec<u32>,
+    pub frame: crate::gpu::Frame,
     pub manifest: Manifest,
-    textures: HashMap<String, Texture>,
     root: String,
-}
-pub fn blend(dst: u32, src: u32, alpha: u32) -> u32 {
-    let a = ((src >> 24) * alpha) / 255;
-    let mut out = 0xff000000;
-    for shift in [0, 8, 16] {
-        out |= ((((src >> shift) & 255) * a + ((dst >> shift) & 255) * (255 - a)) / 255) << shift;
-    }
-    out
-}
-fn blit(
-    frame: &mut [u32],
-    texture: &Texture,
-    x: i32,
-    y: i32,
-    width: usize,
-    height: usize,
-    alpha: u32,
-    flip: bool,
-) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    for dy in 0..height {
-        let py = y + dy as i32;
-        if !(0..H as i32).contains(&py) {
-            continue;
-        }
-        let sy = dy * texture.info.height / height;
-        for dx in 0..width {
-            let px = x + dx as i32;
-            if !(0..W as i32).contains(&px) {
-                continue;
-            }
-            let sx = if flip { width - 1 - dx } else { dx } * texture.info.width / width;
-            let offset = (sy * texture.info.width + sx) * 4;
-            let src = u32::from_le_bytes(texture.data[offset..offset + 4].try_into().unwrap());
-            if src >> 24 == 0 {
-                continue;
-            }
-            let index = py as usize * W + px as usize;
-            frame[index] = if src >> 24 == 255 && alpha == 255 {
-                src
-            } else {
-                blend(frame[index], src, alpha)
-            };
-        }
-    }
+    gpu: crate::gpu::Gpu,
+    last_buffer: usize,
 }
 impl Renderer {
     pub fn new(root: &str) -> Self {
-        let mut manifest: Manifest = serde_json::from_slice(
+        let manifest = serde_json::from_slice(
             &crate::io::read(format!("{root}/DATA/MANIFEST.JSON")).expect("Missing PSP assets"),
         )
         .unwrap();
-        for font in manifest.fonts.values_mut() {
-            font.data = crate::io::read(format!("{root}/DATA/{}", font.file)).unwrap();
-            assert_eq!(font.data.len(), font.width * font.height);
-        }
         Self {
-            frame: vec![WHITE; W * H],
+            frame: crate::gpu::Frame::new(),
             manifest,
-            textures: HashMap::new(),
             root: root.into(),
+            gpu: crate::gpu::Gpu::new(),
+            last_buffer: 0,
         }
     }
     pub fn image(
@@ -128,48 +84,68 @@ impl Renderer {
         alpha: u32,
         flip: bool,
     ) {
-        if !self.textures.contains_key(name) {
-            let Some(info) = self.manifest.images.get(name).cloned() else {
-                return;
+        let Some(info) = self.manifest.images.get(name) else {
+            return;
+        };
+        let (w, h) = size.unwrap_or((info.width, info.height));
+        let sx = w as f32 / info.original_width as f32;
+        let sy = h as f32 / info.original_height as f32;
+        for t in &info.tiles {
+            let left = if flip {
+                info.original_width - t.x - t.width
+            } else {
+                t.x
             };
-            let Ok(data) = crate::io::read(format!("{}/DATA/{}", self.root, info.file)) else {
-                return;
-            };
-            if data.len() != info.width * info.height * 4 {
-                return;
-            }
-            // Bound the software texture cache for PSP-1000's 32 MiB RAM.
-            if self.textures.values().map(|t| t.data.len()).sum::<usize>() + data.len()
-                > 4 * 1024 * 1024
-            {
-                self.textures.clear();
-            }
-            self.textures.insert(name.into(), Texture { info, data });
+            self.frame.draws.push(crate::gpu::Draw {
+                file: t.file.clone(),
+                tw: t.texture_width,
+                th: t.texture_height,
+                font: false,
+                xy: [
+                    x as f32 + left as f32 * sx,
+                    y as f32 + t.y as f32 * sy,
+                    x as f32 + (left + t.width) as f32 * sx,
+                    y as f32 + (t.y + t.height) as f32 * sy,
+                ],
+                uv: if flip {
+                    [32. + t.width as f32, 32., 32., 32. + t.height as f32]
+                } else {
+                    [32., 32., 32. + t.width as f32, 32. + t.height as f32]
+                },
+                color: (alpha << 24) | 0xffffff,
+            });
         }
-        let texture = &self.textures[name];
-        let (w, h) = size.unwrap_or((texture.info.width, texture.info.height));
-        blit(&mut self.frame, texture, x, y, w, h, alpha, flip);
+        if name.contains("_face_") {
+            self.frame.prefix_sealed = true;
+        }
+        if !self.frame.prefix_sealed {
+            self.frame.prefix_len = self.frame.draws.len();
+        }
     }
     pub fn rect(&mut self, x: i32, y: i32, w: usize, h: usize, color: u32) {
-        for py in y.max(0)..(y + h as i32).min(H as i32) {
-            for px in x.max(0)..(x + w as i32).min(W as i32) {
-                let i = py as usize * W + px as usize;
-                self.frame[i] = blend(self.frame[i], color, 255);
-            }
-        }
+        self.frame.draws.push(crate::gpu::Draw {
+            file: String::new(),
+            tw: 0,
+            th: 0,
+            font: false,
+            xy: [
+                x as f32,
+                y as f32,
+                (x + w as i32) as f32,
+                (y + h as i32) as f32,
+            ],
+            uv: [0.; 4],
+            color,
+        });
     }
     pub fn width(&self, text: &str, size: usize) -> f32 {
         let font = &self.manifest.fonts[&size.to_string()];
         text.chars()
             .map(|c| {
-                if c == '💙' {
-                    size as f32 * 0.85
-                } else {
-                    font.glyphs
-                        .get(&c)
-                        .map(|g| g.advance)
-                        .unwrap_or(size as f32 * 0.5)
-                }
+                font.glyphs
+                    .get(&c)
+                    .map(|g| g.advance)
+                    .unwrap_or(size as f32 * 0.5)
             })
             .sum()
     }
@@ -177,46 +153,31 @@ impl Renderer {
         let font = &self.manifest.fonts[&size.to_string()];
         let mut cursor = x as f32;
         for c in text.chars() {
-            if c == '💙' {
-                let unit = size as f32 / 18.;
-                for dy in 0..size {
-                    for dx in 0..size {
-                        let px = (dx as f32 / unit - 7.5) / 7.5;
-                        let py = -(dy as f32 / unit - 8.) / 7.5;
-                        if {
-                            let a = px * px + py * py - 1.;
-                            a * a * a - px * px * py * py * py
-                        } <= 0.
-                        {
-                            let tx = cursor as i32 + dx as i32;
-                            let ty = y + dy as i32;
-                            if (0..W as i32).contains(&tx) && (0..H as i32).contains(&ty) {
-                                self.frame[ty as usize * W + tx as usize] = 0xffffa358;
-                            }
-                        }
-                    }
-                }
-                cursor += size as f32 * 0.85;
-                continue;
-            }
             let Some(g) = font.glyphs.get(&c) else {
                 cursor += size as f32 * 0.5;
                 continue;
             };
-            for dy in 0..g.height {
-                for dx in 0..g.width {
-                    let tx = cursor as i32 + dx as i32;
-                    let ty = y + dy as i32;
-                    if !(0..W as i32).contains(&tx) || !(0..H as i32).contains(&ty) {
-                        continue;
-                    }
-                    let alpha = font.data[(g.y + dy) * font.width + g.x + dx] as u32;
-                    if alpha != 0 {
-                        let i = ty as usize * W + tx as usize;
-                        self.frame[i] = blend(self.frame[i], color, alpha);
-                    }
-                }
-            }
+            let left = cursor + g.left;
+            let top = y as f32 + g.top;
+            self.frame.draws.push(crate::gpu::Draw {
+                file: g.file.clone(),
+                tw: 512,
+                th: 512,
+                font: true,
+                xy: [
+                    left,
+                    top,
+                    left + g.width as f32 / font.scale,
+                    top + g.height as f32 / font.scale,
+                ],
+                uv: [
+                    g.x as f32,
+                    g.y as f32,
+                    (g.x + g.width) as f32,
+                    (g.y + g.height) as f32,
+                ],
+                color: if c == '\u{1f499}' { BLUE } else { color },
+            });
             cursor += g.advance;
         }
     }
@@ -255,7 +216,7 @@ impl Renderer {
         color: u32,
     ) -> usize {
         let text = clean_text(text);
-        let (size, lines) = [14, 12, 10]
+        let (size, lines) = [12, 10]
             .into_iter()
             .map(|size| {
                 (
@@ -358,10 +319,12 @@ impl Renderer {
                 }
             }
         }
+        self.frame.scene_len = self.frame.draws.len();
     }
     pub fn dialogue(&mut self, state: &State, story: &Story, lang: &str, revealed: usize) {
         if state.nvl_mode {
             self.image("ui nvl", 0, 0, Some((480, 272)), 255, false);
+            self.frame.scene_len = self.frame.draws.len();
             let paragraphs: Vec<_> = state
                 .nvl
                 .iter()
@@ -426,6 +389,7 @@ impl Renderer {
             let name = story.translate(name, lang);
             self.name(&state.who, &name, 129, top - 17);
         }
+        self.frame.scene_len = self.frame.draws.len();
         self.flow(
             &text,
             142,
@@ -436,25 +400,14 @@ impl Renderer {
             if state.who == "n" { 0xff987779 } else { INK },
         );
     }
-    pub fn present(&self, buffer: usize) {
-        unsafe {
-            let base = (psp::sys::sceGeEdramGetAddr() as usize | 0x40000000) as *mut u32;
-            let base = base.add(buffer * 512 * H);
-            for y in 0..H {
-                core::ptr::copy_nonoverlapping(
-                    self.frame.as_ptr().add(y * W),
-                    base.add(y * 512),
-                    W,
-                );
-            }
-            psp::sys::sceDisplayWaitVblankStart();
-            psp::sys::sceDisplaySetFrameBuf(
-                base.cast(),
-                512,
-                psp::sys::DisplayPixelFormat::Psm8888,
-                psp::sys::DisplaySetBufSync::Immediate,
-            );
-        }
+    pub fn present(&mut self, buffer: usize) {
+        let _ = buffer;
+        self.gpu.present(&self.frame, &self.root, 1);
+        self.last_buffer = 1;
+    }
+    pub fn pixels(&mut self) -> Vec<u32> {
+        self.present(self.last_buffer);
+        self.gpu.pixels(self.last_buffer)
     }
 }
 pub fn layers(sprite: &Sprite, state: &State, story: &Story) -> Vec<String> {

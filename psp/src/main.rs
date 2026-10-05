@@ -21,6 +21,7 @@ mod audio;
 mod audit;
 mod io;
 use audio::Audio;
+mod gpu;
 mod render;
 use engine::{clean_text, Sprite, State, Stop, Story};
 use render::{Renderer, BLUE, H, INK, W, WHITE};
@@ -101,7 +102,7 @@ fn save<T: Serialize>(name: &str, value: &T) -> bool {
     let temp = format!("{path}.TMP");
     io::write(&temp, &data).is_ok() && io::replace(&temp, &path)
 }
-fn screenshot(r: &Renderer, name: &str) {
+fn screenshot(r: &mut Renderer, name: &str) {
     let mut bmp = vec![0u8; 54 + W * H * 4];
     bmp[..2].copy_from_slice(b"BM");
     let len = bmp.len() as u32;
@@ -112,7 +113,7 @@ fn screenshot(r: &Renderer, name: &str) {
     bmp[22..26].copy_from_slice(&(-(H as i32)).to_le_bytes());
     bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
     bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
-    for (i, p) in r.frame.iter().enumerate() {
+    for (i, p) in r.pixels().iter().enumerate() {
         bmp[54 + i * 4..58 + i * 4].copy_from_slice(&[
             (*p >> 16) as u8,
             (*p >> 8) as u8,
@@ -123,7 +124,9 @@ fn screenshot(r: &Renderer, name: &str) {
     let _ = io::write(&format!("{}/{name}.BMP", io::save_dir()), &bmp);
 }
 fn menu(r: &mut Renderer, title: &str, labels: &[String], selected: usize) {
+    r.frame.fill(WHITE);
     r.image("ui game_menu", 0, 0, Some((W, H)), 255, false);
+    r.frame.scene_len = r.frame.draws.len();
     r.text(title, 22, 12, 18, BLUE);
     for (i, label) in labels.iter().enumerate() {
         let y = 45 + i as i32 * 23;
@@ -133,6 +136,20 @@ fn menu(r: &mut Renderer, title: &str, labels: &[String], selected: usize) {
         r.text(label, 115, y, 12, if i == selected { BLUE } else { INK });
     }
     r.text("D-pad: select   X: confirm   O: back", 18, 253, 10, INK);
+}
+fn dress_scene(r: &mut Renderer, state: &State, story: &Story) {
+    r.frame.fill(WHITE);
+    r.image("bg chapterbreak", 0, 0, Some((W, H)), 255, false);
+    let sprite = Sprite {
+        tag: "side_peri".into(),
+        attrs: vec![state.outfit.clone(), "smile".into()],
+        position: String::new(),
+    };
+    for name in render::layers(&sprite, state, story) {
+        r.image(&name, 22, 45, Some((195, 195)), 255, false);
+    }
+    r.frame.scene_len = r.frame.draws.len();
+    r.frame.prefix_sealed = true;
 }
 fn psp_main() {
     unsafe {
@@ -170,7 +187,7 @@ fn psp_main() {
     let mut started = now();
     let mut pause_until = 0.;
     let mut all = false;
-    let mut base = vec![0u32; W * H];
+    let mut base = gpu::Frame::new();
     let mut old = base.clone();
     let mut buffer = 0;
     let mut frames = 0;
@@ -199,13 +216,13 @@ fn psp_main() {
             }
         }
         if audit && frames == 30 {
-            screenshot(&r, "PSP-TITLE");
+            screenshot(&mut r, "PSP-TITLE");
             state.start(&story, "start");
             stop = state.run(&story);
             page = Page::Game;
         }
         if audit && frames == 90 {
-            screenshot(&r, "PSP-DIALOGUE");
+            screenshot(&mut r, "PSP-DIALOGUE");
             let mut result = audit::run(&mut r, &story);
             result["audio_blocks"] = music.blocks().into();
             assert!(music.blocks() > 0, "Audio did not play");
@@ -220,7 +237,26 @@ fn psp_main() {
                 state.music = "date".into();
                 r.frame.fill(WHITE);
                 r.image("ui main_menu", 0, 0, Some((W, H)), 255, false);
-                r.image("titlelogo", 90, 40, Some((300, 150)), 255, false);
+                r.image("titlelogo", 105, 27, Some((270, 135)), 255, false);
+                r.frame.scene_len = r.frame.draws.len();
+                r.frame.prefix_sealed = true;
+                for i in 0..20 {
+                    let i = i as f32;
+                    let x = ((i * 151. + time as f32 * 6.) % 1400. - 60.) * 0.375;
+                    let y = ((i * 97. + time as f32 * 18.) % 820. - 80.) * 0.375;
+                    r.image(
+                        if i as usize % 2 == 0 {
+                            "titlestar"
+                        } else {
+                            "titleflower2"
+                        },
+                        x as i32,
+                        y as i32,
+                        Some((15, 15)),
+                        128,
+                        false,
+                    );
+                }
                 let labels = ["Start", "Continue", "Settings", "Extras", "Gallery"];
                 if pressed.contains(B::LEFT) {
                     selected = (selected + 4) % 5;
@@ -302,9 +338,7 @@ fn psp_main() {
                 r.frame.clone_from(&base);
                 let age = time - started;
                 if !p.transitions && age < 0.18 {
-                    for (dst, src) in r.frame.iter_mut().zip(&old) {
-                        *dst = render::blend(*src, *dst, (age / 0.18 * 255.) as u32);
-                    }
+                    r.frame.fade_from(&old, (age / 0.18 * 255.) as u32);
                 }
                 if ["vpunch", "hpunch"].contains(&state.effect.as_str()) && age < 0.275 {
                     let phase = (age % 0.1) / 0.1;
@@ -320,18 +354,7 @@ fn psp_main() {
                     } else {
                         ((offset * 6.) as i32, 0)
                     };
-                    for y in 0..H {
-                        for x in 0..W {
-                            let sx = x as i32 - dx;
-                            let sy = y as i32 - dy;
-                            r.frame[y * W + x] =
-                                if (0..W as i32).contains(&sx) && (0..H as i32).contains(&sy) {
-                                    base[sy as usize * W + sx as usize]
-                                } else {
-                                    0xff000000
-                                };
-                        }
-                    }
+                    r.frame.offset(dx, dy);
                 }
                 if stop == Stop::Say && !hidden {
                     r.dialogue(&state, &story, &p.lang, shown);
@@ -428,15 +451,7 @@ fn psp_main() {
                     }
                 }
                 if stop == Stop::Dress {
-                    r.image("bg chapterbreak", 0, 0, Some((W, H)), 255, false);
-                    let sprite = Sprite {
-                        tag: "side_peri".into(),
-                        attrs: vec![state.outfit.clone(), "smile".into()],
-                        position: String::new(),
-                    };
-                    for name in render::layers(&sprite, &state, &story) {
-                        r.image(&name, 22, 45, Some((195, 195)), 255, false);
-                    }
+                    dress_scene(&mut r, &state, &story);
                     if pressed.contains(B::UP) {
                         selected = (selected + 2) % 3;
                     }
@@ -657,7 +672,21 @@ fn psp_main() {
                 if !images.is_empty() {
                     selected %= images.len();
                     r.frame.fill(0xff000000);
-                    r.image(&images[selected], 0, 0, Some((480, 272)), 255, false);
+                    if let Some(info) = r.manifest.images.get(&images[selected]) {
+                        let scale = (480.0 / info.original_width as f32)
+                            .min(272.0 / info.original_height as f32);
+                        let w = (info.original_width as f32 * scale + 0.5) as usize;
+                        let h = (info.original_height as f32 * scale + 0.5) as usize;
+                        r.image(
+                            &images[selected],
+                            (480 - w as i32) / 2,
+                            (272 - h as i32) / 2,
+                            Some((w, h)),
+                            255,
+                            false,
+                        );
+                        r.frame.scene_len = r.frame.draws.len();
+                    }
                     r.rect(0, 250, 480, 22, 0xccffffff);
                     r.text(
                         &format!("{} / {}   {}", selected + 1, images.len(), images[selected]),

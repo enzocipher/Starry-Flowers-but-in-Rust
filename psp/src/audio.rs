@@ -93,14 +93,14 @@ impl Audio {
 }
 unsafe extern "C" fn worker(_: usize, arg: *mut c_void) -> i32 {
     let shared = Arc::from_raw(*(arg as *const *const Shared));
-    let channel = sys::sceAudioChReserve(-1, 1024, sys::AudioFormat::Mono);
+    let channel = sys::sceAudioChReserve(-1, 1024, sys::AudioFormat::Stereo);
     shared.status.store(channel, Ordering::Relaxed);
     if channel < 0 {
         return channel;
     }
     let mut fd = sys::SceUid(-1);
     let mut generation = u32::MAX;
-    let mut samples = [0i16; 1024];
+    let mut samples = [0i16; 2048];
     loop {
         let next = shared.generation.load(Ordering::Acquire);
         if next != generation {
@@ -119,7 +119,7 @@ unsafe extern "C" fn worker(_: usize, arg: *mut c_void) -> i32 {
             continue;
         }
         samples.fill(0);
-        let n = sys::sceIoRead(fd, samples.as_mut_ptr().cast(), 2048);
+        let n = sys::sceIoRead(fd, samples.as_mut_ptr().cast(), 4096);
         if n <= 0 {
             if shared.looping && n == 0 {
                 sys::sceIoLseek(fd, 0, sys::IoWhence::Set);

@@ -1,5 +1,6 @@
 """Package the native PRX as a PSP UMD ISO and a Memory Stick homebrew directory."""
 import argparse
+import json
 import pathlib
 import shutil
 import subprocess
@@ -28,8 +29,9 @@ with tempfile.TemporaryDirectory() as tmp:
     add(prx, "/PSP_GAME/SYSDIR/EBOOT.BIN")
     add(prx, "/PSP_GAME/SYSDIR/BOOT.BIN")
     add(sfo, "/PSP_GAME/PARAM.SFO")
+    active = set(json.loads((dist / "DATA/MANIFEST.JSON").read_text(encoding="utf-8"))["files"])
     for source in sorted((dist / "DATA").iterdir()):
-        if source.is_file() and source.name != "AUDIT": add(source, "/PSP_GAME/USRDIR/DATA/" + source.name)
+        if source.is_file() and source.name in active: add(source, "/PSP_GAME/USRDIR/DATA/" + source.name)
     umd = tmp / "UMD_DATA.BIN"
     umd.write_bytes(b"SFWR00001|0001|G")
     add(umd, "/UMD_DATA.BIN")
