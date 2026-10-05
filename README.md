@@ -30,6 +30,7 @@ Para reconstruir el contenido desde el juego que está junto a este proyecto:
 ```powershell
 python tools/extract.py
 Copy-Item -Recurse -Force ../StarryFlowers-1.7.4-pc/game/tl assets/
+python tools/prepare_inline.py
 python tools/compile_story.py
 ```
 
@@ -39,7 +40,7 @@ python tools/compile_story.py
 
 Incluye los siete capítulos, epílogo y ocho escenas extra. Conserva el diálogo y las decisiones originales; elegir accesorios no cambia la historia. Los personajes por capas, fondos, CG, audio, favoritos y desbloqueos se gestionan en Rust.
 
-El menú principal, las opciones y el diálogo usan los fondos, el logotipo, las dimensiones y la distribución originales. Se conservan las transiciones suaves entre expresiones, y los `vpunch`/`hpunch` reproducen los desplazamientos y la duración de Ren'Py (0,275 s); el temblor se activa en los diálogos originales, sin deducirlo por el rubor del personaje.
+En Windows, el menú principal utiliza siempre el cielo estrellado. Las opciones y el diálogo conservan los recursos originales; los controles usan las barras de flores, muestran sus valores y ajustan los rótulos largos para evitar superposiciones. Los corazones y otros símbolos de texto se extraen de las fuentes Twemoji y DejaVu incluidas en el juego, con sus gráficos, colores y medidas originales. Se conservan las transiciones suaves entre expresiones, y los `vpunch`/`hpunch` reproducen los desplazamientos y la duración de Ren'Py (0,275 s); el temblor se activa en los diálogos originales, sin deducirlo por el rubor del personaje.
 
 Todavía hay diferencias: algunas transiciones de escena, partículas y movimientos son aproximaciones; el formato de texto se muestra sin cursivas ni efectos tipográficos avanzados. El historial guarda las últimas 250 entradas. La galería permite consultar las ilustraciones y escuchar la banda sonora. No se presenta como una reproducción píxel por píxel.
 
@@ -56,3 +57,5 @@ Las 14 pruebas recorren ambas elecciones iniciales hasta el final, las ocho esce
 Autoría original: historia, arte y música por **NomnomNami**; tema final **“Pretty in Pink”**, por **Marlene Bellissimo**. Se conserva la copia original y sus archivos de atribución. Este paquete local no cambia la autoría ni la licencia de los recursos originales.
 
 El texto leído se registra al terminar de aparecer y se guarda inmediatamente. Saltar se detiene al llegar a texto no leído (salvo la opción de saltarlo también); Auto avanza tras mostrar el diálogo y esperar el tiempo configurado. El modo activo aparece subrayado. Avanzar manualmente desactiva ambos modos.
+
+Gráficos Twemoji: © Twitter y colaboradores, licencia CC-BY 4.0; las atribuciones originales se incluyen en `assets/gui/emoji/`.

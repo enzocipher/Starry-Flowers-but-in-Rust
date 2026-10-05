@@ -27,7 +27,7 @@ impl Default for Preferences {
         Self {
             version: 2,
             lang: String::new(),
-            volume: 1.,
+            volume: 0.8,
             sound_volume: 1.,
             mute: false,
             fullscreen: false,
@@ -100,33 +100,63 @@ pub fn punch_offset(effect: &str, elapsed: f64) -> Vec2 {
     }
 }
 fn slider(art: &Art, value: &mut f32, min: f32, max: f32, r: Rect) {
-    draw_rectangle(r.x, r.y + 12., r.w, 8., Color::new(0.77, 0.81, 0.91, 1.));
-    let fraction = (*value - min) / (max - min);
-    draw_rectangle(r.x, r.y + 12., r.w * fraction, 8., BLUE);
-    draw_circle(r.x + r.w * fraction, r.y + 16., 11., BLUE);
+    let fraction = ((*value - min) / (max - min)).clamp(0., 1.);
+    let hover = r.contains(mouse());
+    let area = Rect::new(r.x, r.y, r.w, 42.);
+    art.image(
+        if hover {
+            "ui slider/horizontal_hover_bar"
+        } else {
+            "ui slider/horizontal_idle_bar"
+        },
+        area.x,
+        area.y,
+        area.w,
+        area.h,
+    );
+    art.image_progress(
+        if hover {
+            "ui slider/horizontal_hover_bar2"
+        } else {
+            "ui slider/horizontal_idle_bar2"
+        },
+        area,
+        fraction,
+    );
     if r.contains(mouse()) && is_mouse_button_down(MouseButton::Left) {
         *value = min + (max - min) * ((mouse().x - r.x) / r.w).clamp(0., 1.);
     }
     let _ = art;
 }
 fn option(art: &Art, text: &str, r: Rect, selected: bool) -> bool {
+    control(art, text, r, selected, false)
+}
+fn checkbox(art: &Art, text: &str, r: Rect, selected: bool) -> bool {
+    control(art, text, r, selected, true)
+}
+fn control(art: &Art, text: &str, r: Rect, selected: bool, check: bool) -> bool {
     let hover = r.contains(mouse());
-    if selected {
-        draw_circle(r.x + 8., r.y + r.h / 2., 6., BLUE);
-    } else {
-        draw_circle_lines(
-            r.x + 8.,
-            r.y + r.h / 2.,
-            6.,
-            1.5,
-            Color::new(0.65, 0.69, 0.76, 1.),
-        );
-    }
+    art.image(
+        match (check, selected) {
+            (true, true) => "ui button/check_selected_foreground",
+            (true, false) => "ui button/check_foreground",
+            (false, true) => "ui button/radio_selected_foreground",
+            (false, false) => "ui button/radio_foreground",
+        },
+        r.x,
+        r.y + 5.,
+        18.,
+        28.,
+    );
+    let size = (18..=26)
+        .rev()
+        .find(|size| art.text_width(text, *size) <= r.w - 28.)
+        .unwrap_or(18);
     art.text(
         text,
-        r.x + 24.,
-        r.y + r.h / 2. + 9.,
-        26,
+        r.x + 26.,
+        r.y + r.h / 2. + size as f32 * 0.35,
+        size,
         if hover || selected { BLUE } else { INK },
     );
     hover && is_mouse_button_pressed(MouseButton::Left)
@@ -136,7 +166,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     art.text(&tr("Options"), 60., 70., 40, BLUE);
     let mut language = false;
     for (x, title) in [(370., "Display"), (650., "Rollback Side"), (930., "Skip")] {
-        art.text(&tr(title), x, 160., 30, BLUE);
+        art.label(&tr(title), x, 160., 220., 28, BLUE);
     }
     for (i, (id, label)) in [(false, "Window"), (true, "Fullscreen")].iter().enumerate() {
         if option(
@@ -167,7 +197,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
             p.rollback_side = id.to_string();
         }
     }
-    if option(
+    if checkbox(
         art,
         &tr("Unseen Text"),
         Rect::new(930., 185., 280., 38.),
@@ -175,7 +205,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     ) {
         p.skip_unseen = !p.skip_unseen;
     }
-    if option(
+    if checkbox(
         art,
         &tr("After Choices"),
         Rect::new(930., 228., 280., 38.),
@@ -183,7 +213,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     ) {
         p.skip_after_choices = !p.skip_after_choices;
     }
-    if option(
+    if checkbox(
         art,
         &tr("Transitions"),
         Rect::new(930., 271., 280., 38.),
@@ -191,7 +221,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     ) {
         p.skip_transitions = !p.skip_transitions;
     }
-    art.text(&tr("Text Speed"), 370., 390., 30, BLUE);
+    art.label(&tr("Text Speed"), 370., 390., 345., 30, BLUE);
     let mut text_speed = if p.text_cps == 0. { 201. } else { p.text_cps };
     slider(
         art,
@@ -201,8 +231,18 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
         Rect::new(370., 410., 345., 38.),
     );
     p.text_cps = if text_speed >= 200.5 { 0. } else { text_speed };
-    art.text(if p.text_cps == 0. { "∞" } else { "" }, 730., 438., 25, INK);
-    art.text(&tr("Auto-Forward Time"), 370., 495., 30, BLUE);
+    art.text(
+        &if p.text_cps == 0. {
+            "∞".into()
+        } else {
+            format!("{:.0}", p.text_cps)
+        },
+        725.,
+        438.,
+        22,
+        INK,
+    );
+    art.label(&tr("Auto-Forward Time"), 370., 495., 345., 30, BLUE);
     slider(
         art,
         &mut p.afm_time,
@@ -210,9 +250,18 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
         30.,
         Rect::new(370., 515., 345., 38.),
     );
-    art.text(&tr("Music Volume"), 820., 390., 30, BLUE);
+    art.text(&format!("{:.0}", p.afm_time), 725., 543., 22, INK);
+    art.label(&tr("Music Volume"), 820., 390., 285., 30, BLUE);
     slider(art, &mut p.volume, 0., 1., Rect::new(820., 410., 350., 38.));
-    art.text(&tr("Sound Volume"), 820., 495., 30, BLUE);
+    art.text(&format!("{:.0}%", p.volume * 100.), 1125., 385., 22, INK);
+    art.label(&tr("Sound Volume"), 820., 495., 285., 30, BLUE);
+    art.text(
+        &format!("{:.0}%", p.sound_volume * 100.),
+        1125.,
+        490.,
+        22,
+        INK,
+    );
     slider(
         art,
         &mut p.sound_volume,
@@ -220,7 +269,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
         1.,
         Rect::new(820., 515., 350., 38.),
     );
-    if option(
+    if checkbox(
         art,
         &tr("Mute All"),
         Rect::new(820., 585., 280., 38.),

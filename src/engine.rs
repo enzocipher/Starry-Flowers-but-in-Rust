@@ -26,6 +26,15 @@ pub struct Op {
     #[serde(default)]
     pub effect: String,
 }
+#[derive(Clone, Deserialize, Debug)]
+pub struct InlineSymbol {
+    pub image: String,
+    pub advance: f32,
+    pub width: f32,
+    pub height: f32,
+    pub baseline_top: f32,
+    pub tint: bool,
+}
 #[derive(Deserialize)]
 pub struct Story {
     pub ops: Vec<Op>,
@@ -34,6 +43,8 @@ pub struct Story {
     pub translations: HashMap<String, HashMap<String, String>>,
     pub accessories: Vec<Vec<String>>,
     pub text_images: HashMap<String, String>,
+    #[serde(default)]
+    pub inline_symbols: HashMap<char, InlineSymbol>,
 }
 impl Story {
     pub fn load() -> Self {
@@ -368,6 +379,7 @@ pub fn clean_text(s: &str) -> String {
         match ch {
             '{' => tag = true,
             '}' => tag = false,
+            '\u{fe0f}' => {}
             _ => {
                 if !tag {
                     out.push(ch)
@@ -381,6 +393,38 @@ pub fn clean_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_inline_symbols_resolve_for_story_and_translations() {
+        let story = Story::load();
+        for symbol in story.inline_symbols.values() {
+            assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join(&story.images[&symbol.image])
+                .is_file());
+            assert!(symbol.advance > 0. && symbol.width > 0. && symbol.height > 0.);
+        }
+        for text in story
+            .ops
+            .iter()
+            .map(|o| &o.text)
+            .chain(story.translations.values().flat_map(|map| map.values()))
+        {
+            for c in text.chars() {
+                if (0x1f000..=0x1ffff).contains(&(c as u32))
+                    || ['\u{2764}', '\u{2665}'].contains(&c)
+                {
+                    assert!(
+                        story.inline_symbols.contains_key(&c),
+                        "Missing inline graphic for {c}"
+                    );
+                }
+            }
+        }
+        for (who, c) in [("p", '\u{2764}'), ("c", '\u{1f90e}'), ("w", '\u{1f499}')] {
+            assert!(story.ops.iter().any(|o| o.who == who && o.text.contains(c)));
+        }
+        assert_eq!(clean_text("❤\u{fe0f} 💙 🤎"), "❤ 💙 🤎");
+    }
     #[test]
     fn inline_punches_survive_story_compilation() {
         let story = Story::load();
