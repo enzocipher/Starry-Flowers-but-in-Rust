@@ -1,6 +1,6 @@
 {
   "accessory_screens": 8,
-  "audio_blocks": 4608,
+  "audio_blocks": 4642,
   "decisions": 2,
   "dialogues": 4781,
   "endings": 2,
@@ -32,7 +32,7 @@
     "settings_cache_different_pixels": 10991,
     "settings_cache_mean_rgb_error": 0.6358226102941177,
     "settings_cache_severe_pixels": 168,
-    "settings_navigation_ms_per_frame": 16.683333333333294,
+    "settings_navigation_ms_per_frame": 16.68333333333341,
     "settings_navigation_scene_renders": 0,
     "settings_navigation_texture_loads": 0,
     "startup_fade_scene_renders": 0,
@@ -47,5 +47,12 @@
     "source": "Original title logo and menu background",
     "iso_verified": true,
     "pbp_verified": true
+  },
+  "about_pages_verified": 11,
+  "original_translation_credits": 13,
+  "credit_lists": {
+    "testing": 13,
+    "special_thanks": 14,
+    "patrons": 16
   }
 }

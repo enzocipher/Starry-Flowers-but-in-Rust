@@ -73,6 +73,7 @@ impl Default for Prefs {
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Title,
+    About,
     Game,
     Menu,
     Settings,
@@ -138,6 +139,43 @@ fn menu(r: &mut Renderer, title: &str, labels: &[String], selected: usize) {
         r.text(label, 115, y, 12, if i == selected { BLUE } else { INK });
     }
     r.text("D-pad: select   X: confirm   O: back", 18, 253, 10, INK);
+}
+fn about_scene(r: &mut Renderer, story: &Story, lang: &str, index: usize) {
+    r.frame.fill(WHITE);
+    r.image("ui game_menu", 0, 0, Some((W, H)), 255, false);
+    r.frame.scene_len = r.frame.draws.len();
+    r.frame.prefix_sealed = true;
+    r.text(&story.translate("About", lang), 22, 12, 18, BLUE);
+    if let Some(credit) = story.credits.get(index) {
+        r.label(
+            &story.translate(&credit.heading, lang),
+            130,
+            43,
+            315.,
+            14,
+            BLUE,
+        );
+        r.flow(
+            &credit.body.replace("RENPY-LICENSE.txt", "RENPY.TXT"),
+            130,
+            69,
+            315.,
+            170,
+            usize::MAX,
+            INK,
+        );
+    }
+    r.text(
+        &format!(
+            "{} / {}   Left/Right: page   X: next   O: back",
+            index + 1,
+            story.credits.len()
+        ),
+        110,
+        251,
+        10,
+        INK,
+    );
 }
 fn settings_scene(r: &mut Renderer, story: &Story, p: &Prefs, selected: usize) {
     r.frame.fill(WHITE);
@@ -428,18 +466,21 @@ fn psp_main() {
                         false,
                     );
                 }
-                let labels = ["Start", "Continue", "Settings", "Extras", "Gallery"];
+                let labels = [
+                    "Start", "Continue", "Settings", "Extras", "Gallery", "About",
+                ];
                 if pressed.contains(B::LEFT) {
-                    selected = (selected + 4) % 5;
+                    selected = (selected + labels.len() - 1) % labels.len();
                 }
                 if pressed.contains(B::RIGHT) {
-                    selected = (selected + 1) % 5;
+                    selected = (selected + 1) % labels.len();
                 }
                 for (i, label) in labels.iter().enumerate() {
-                    r.text(
+                    r.label(
                         label,
-                        18 + i as i32 * 94,
+                        10 + i as i32 * 78,
                         220,
+                        76.,
                         12,
                         if selected == i { BLUE } else { INK },
                     );
@@ -477,11 +518,31 @@ fn psp_main() {
                             return_page = Page::Title;
                             page = Page::Gallery;
                         }
+                        5 => {
+                            return_page = Page::Title;
+                            page = Page::About;
+                        }
                         _ => {
                             notice = "Finish the story to unlock extras.".into();
                             notice_until = time + 2.;
                         }
                     }
+                    selected = 0;
+                }
+            }
+            Page::About => {
+                let count = story.credits.len();
+                if count > 0 {
+                    if pressed.contains(B::LEFT) {
+                        selected = (selected + count - 1) % count;
+                    }
+                    if pressed.contains(B::RIGHT) || cross {
+                        selected = (selected + 1) % count;
+                    }
+                    about_scene(&mut r, &story, &p.lang, selected);
+                }
+                if circle {
+                    page = return_page;
                     selected = 0;
                 }
             }
@@ -683,7 +744,7 @@ fn psp_main() {
             }
             Page::Menu | Page::Settings | Page::Save | Page::Load | Page::Extras => {
                 let labels: Vec<String> = match page {
-                    Page::Menu => ["Return", "Save", "Load", "Settings", "Main Menu"]
+                    Page::Menu => ["Return", "Save", "Load", "Settings", "About", "Main Menu"]
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),
@@ -800,8 +861,12 @@ fn psp_main() {
                                 Page::Save,
                                 Page::Load,
                                 Page::Settings,
+                                Page::About,
                                 Page::Title,
                             ][selected];
+                            if page == Page::About {
+                                return_page = Page::Menu;
+                            }
                             if page == Page::Title {
                                 save("PREFS", &p);
                             }

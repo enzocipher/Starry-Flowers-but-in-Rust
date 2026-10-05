@@ -12,6 +12,7 @@ manifest={'images':{},'fonts':{},'audio':{},'version':3,'inline_symbols':story.g
 files={}; active={'MANIFEST.JSON'}
 for source,target in [('Twemoji-LICENSE.txt','TWEMOJI.TXT'),('DejaVu-LICENSE.txt','DEJAVU.TXT')]:
  shutil.copyfile(ROOT/'assets/gui/emoji'/source,OUT/target);active.add(target)
+shutil.copyfile(ROOT/"licenses/RENPY-LICENSE.txt",OUT/"RENPY.TXT");active.add("RENPY.TXT")
 def power2(n): return 1<<(n-1).bit_length()
 for name,path in images.items():
  if path not in files:
@@ -32,7 +33,7 @@ for name,path in images.items():
   files[path]={'width':max(1,round(ow*.375)),'height':max(1,round(oh*.375)),'original_width':ow,'original_height':oh,'tiles':tiles}
  manifest['images'][name]=files[path]
 chars=set(''.join(op.get('text','') for op in story['ops']))
-chars.add('∞'); chars.update(''.join(story['translations'].get('es',{}).values())); chars.update(chr(i) for i in range(32,256))
+chars.update(''.join(c['heading']+c['body'] for c in story.get('credits',[]))); chars.add('∞'); chars.update(''.join(story['translations'].get('es',{}).values())); chars.update(chr(i) for i in range(32,256))
 chars=sorted(c for c in chars if c.isprintable())
 for size in [8,10,12,14,18,24]:
  scale=4; font=ImageFont.truetype(str(ROOT/'assets/tl/None/Nunito-Bold.ttf'),size*scale)

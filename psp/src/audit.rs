@@ -113,6 +113,10 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     preview.mute = true;
     crate::settings_scene(renderer, story, &preview, 8);
     screenshot(renderer, "PSP-SETTINGS-ES");
+    for index in 0..story.credits.len() {
+        crate::about_scene(renderer, story, "", index);
+        screenshot(renderer, &format!("PSP-ABOUT-{}", index));
+    }
     let perf = performance(renderer, story);
     renderer.frame.fill(0xffffffff);
     renderer.text("PSP audit passed", 25, 25, 18, INK);

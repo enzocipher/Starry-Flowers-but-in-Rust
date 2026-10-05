@@ -57,3 +57,5 @@ Se prueba con el perfil PSP-1000 de 32 MiB de PPSSPP. La verificación en emulad
 Historia, arte y música originales: **NomnomNami**. Tema final “Pretty in Pink”: **Marlene Bellissimo**. Se conserva la autoría y licencia de los recursos originales.
 
 Los corazones azul, rojo y marrón se verifican en sus diálogos originales. Los gráficos Twemoji son de Twitter y colaboradores (CC-BY 4.0); los archivos originales de atribución se conservan junto a los recursos preparados.
+
+About está disponible desde el menú inicial y el menú durante la partida. Izquierda/derecha o X recorren los créditos completos; O vuelve. Se incluyen los autores de las 13 traducciones del original, aunque PSP permite jugar en inglés/español, además de las listas completas de pruebas, agradecimientos y mecenas. La licencia original de Ren'Py está en `DATA/RENPY.TXT`.
