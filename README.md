@@ -61,3 +61,5 @@ Autoría original: historia, arte y música por **NomnomNami**; tema final **“
 El texto leído se registra al terminar de aparecer y se guarda inmediatamente. Saltar se detiene al llegar a texto no leído (salvo la opción de saltarlo también); Auto avanza tras mostrar el diálogo y esperar el tiempo configurado. El modo activo aparece subrayado. Avanzar manualmente desactiva ambos modos.
 
 Gráficos Twemoji: © Twitter y colaboradores, licencia CC-BY 4.0; las atribuciones originales se incluyen en `assets/gui/emoji/`.
+
+About incluye los créditos originales de historia, arte, música, las 13 traducciones, pruebas, agradecimientos y mecenas, repartidos en páginas. Los nombres de las listas se transcribieron de `names1.png`, `names2.png` y `names3.png`; la licencia original de Ren'Py acompaña los recursos.
