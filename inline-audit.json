@@ -1,0 +1,62 @@
+{
+  "original_emoji_font": "renpy/common/TwemojiCOLRv0.ttf",
+  "inline_image_tags": [],
+  "symbols": {
+    "0x1f499": {
+      "occurrences": 180,
+      "speakers": {
+        "w": 140,
+        "": 36,
+        "r": 1,
+        "h": 1
+      },
+      "asset": "gui/emoji/1f499.png"
+    },
+    "0x1f90e": {
+      "occurrences": 5,
+      "speakers": {
+        "c": 5
+      },
+      "asset": "gui/emoji/1f90e.png"
+    },
+    "0x2764": {
+      "occurrences": 4,
+      "speakers": {
+        "p": 4
+      },
+      "asset": "gui/emoji/2764.png"
+    },
+    "0x2665": {
+      "occurrences": 0,
+      "speakers": {},
+      "asset": "gui/emoji/2665.png"
+    },
+    "0x2714": {
+      "occurrences": 0,
+      "speakers": {},
+      "asset": "gui/emoji/2714.png"
+    },
+    "0x2718": {
+      "occurrences": 0,
+      "speakers": {},
+      "asset": "gui/emoji/2718.png"
+    }
+  },
+  "translations_checked": [
+    "es",
+    "fr",
+    "ger",
+    "ita",
+    "kor",
+    "None",
+    "pl",
+    "ptbr",
+    "ru",
+    "thai",
+    "tur",
+    "ukr",
+    "vi",
+    "zh"
+  ],
+  "passed": true
+}
