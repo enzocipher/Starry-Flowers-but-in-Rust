@@ -112,7 +112,8 @@ for n in range(1,4):
 for op in ops:
     if op['op'] in ('jump','call') and op['text'] not in labels and op['text'] != 'gallery': raise ValueError(op)
 inline_symbols=json.loads((assets/"gui/emoji/symbols.json").read_text(encoding="utf-8")) if (assets/"gui/emoji/symbols.json").exists() else {}
-data=dict(inline_symbols=inline_symbols,ops=ops,labels=labels,images=images,translations=translations,accessories=accessories,text_images=text_images)
+credits=json.loads((root/"credits.json").read_text(encoding="utf-8"))["pages"]
+data=dict(credits=credits,inline_symbols=inline_symbols,ops=ops,labels=labels,images=images,translations=translations,accessories=accessories,text_images=text_images)
 (root/'story.json').write_text(json.dumps(data,ensure_ascii=False),encoding='utf8')
 print(f'{len(ops)} instructions, {len(labels)} labels, {len(images)} images; translations: {list(translations)}')
 print('Uncompiled commands:',dict(ignored))
