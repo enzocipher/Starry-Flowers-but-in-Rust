@@ -468,6 +468,9 @@ impl Renderer {
             if state.who == "n" { 0xff987779 } else { INK },
         );
     }
+    pub fn stats(&self) -> (usize, usize) {
+        (self.gpu.texture_loads, self.gpu.scene_renders)
+    }
     pub fn present(&mut self, buffer: usize) {
         let _ = buffer;
         self.gpu.present(&self.frame, &self.root, 1);

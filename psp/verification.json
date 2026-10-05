@@ -1,6 +1,6 @@
 {
   "accessory_screens": 8,
-  "audio_blocks": 4441,
+  "audio_blocks": 4608,
   "decisions": 2,
   "dialogues": 4781,
   "endings": 2,
@@ -13,7 +13,7 @@
   "physical_hardware_tested": false,
   "toolchain": "rustc 1.101.0-nightly (282215592 2026-10-04)",
   "heap_mib": 16,
-  "renderer": "PSP GU GPU sprites, bilinear/trilinear filtering, VRAM scene caches",
+  "renderer": "PSP GU GPU sprites; aligned RAM scene/prefix/transition cache; pinned UI font atlases",
   "texture_source": "Original-resolution RGBA; lossless zlib tiles",
   "lossless_tiles_verified": 1238,
   "font_raster_scale": 4,
@@ -27,5 +27,25 @@
     "settings English/Spanish"
   ],
   "inline_symbols": 3,
-  "original_inline_graphics": 6
+  "original_inline_graphics": 6,
+  "performance": {
+    "settings_cache_different_pixels": 10991,
+    "settings_cache_mean_rgb_error": 0.6358226102941177,
+    "settings_cache_severe_pixels": 168,
+    "settings_navigation_ms_per_frame": 16.683333333333294,
+    "settings_navigation_scene_renders": 0,
+    "settings_navigation_texture_loads": 0,
+    "startup_fade_scene_renders": 0,
+    "startup_fade_texture_loads": 0
+  },
+  "scene_cache_resolution": "480x272",
+  "texture_cache_mib": 3,
+  "aligned_scene_cache_mib": 3,
+  "launcher_images": {
+    "ICON0.PNG": "144x80",
+    "PIC1.PNG": "480x272",
+    "source": "Original title logo and menu background",
+    "iso_verified": true,
+    "pbp_verified": true
+  }
 }

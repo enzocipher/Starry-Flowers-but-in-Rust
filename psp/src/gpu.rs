@@ -1,7 +1,7 @@
 //! GPU sprites retain source texture resolution, including in PPSSPP.
-//! Three 512x272 RGBA surfaces fit in PSP VRAM: reusable scene prefix (0),
-//! display (1), and complete scene (2). Cached surfaces use RGB sampling:
-//! PSP framebuffer alpha stores stencil and is not ordinary image alpha.
+//! Render complete scenes once, then keep aligned RAM copies for composition.
+//! Sampling persistent VRAM aliases caused corrupted menus in PPSSPP.
+//! Cached surfaces use RGB sampling because framebuffer alpha stores stencil.
 //! Finish the GE list before evicting textures or reusing list memory.
 use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use core::{ffi::c_void, ptr};
@@ -26,6 +26,8 @@ pub struct Frame {
     pub scene_len: usize,
     pub prefix_len: usize,
     pub prefix_sealed: bool,
+    pub fade_alpha: u32,
+    pub offset: [f32; 2],
 }
 impl Frame {
     pub fn new() -> Self {
@@ -35,36 +37,25 @@ impl Frame {
             scene_len: 0,
             prefix_len: 0,
             prefix_sealed: false,
+            fade_alpha: 255,
+            offset: [0., 0.],
         }
     }
     pub fn fill(&mut self, c: u32) {
         self.clear = c;
         self.draws.clear();
+        self.fade_alpha = 255;
+        self.offset = [0., 0.];
         self.scene_len = 0;
         self.prefix_len = 0;
         self.prefix_sealed = false;
     }
-    pub fn fade_from(&mut self, old: &Self, alpha: u32) {
-        self.scene_len = 0;
-        self.prefix_len = 0;
-        self.prefix_sealed = false;
-        let mut draws = old.draws.clone();
-        for d in &mut self.draws {
-            d.color = (d.color & 0xffffff) | (((d.color >> 24) * alpha / 255) << 24);
-        }
-        draws.append(&mut self.draws);
-        self.draws = draws;
+    pub fn fade_from(&mut self, _old: &Self, alpha: u32) {
+        // Fade cached complete scenes; never decompress both scenes every frame.
+        self.fade_alpha = alpha.min(255);
     }
     pub fn offset(&mut self, x: i32, y: i32) {
-        self.scene_len = 0;
-        self.prefix_len = 0;
-        self.prefix_sealed = false;
-        for d in &mut self.draws {
-            d.xy[0] += x as f32;
-            d.xy[2] += x as f32;
-            d.xy[1] += y as f32;
-            d.xy[3] += y as f32;
-        }
+        self.offset = [x as f32, y as f32];
     }
 }
 struct Cached {
@@ -78,7 +69,14 @@ pub struct Gpu {
     clock: u64,
     queued: usize,
     scene_key: u64,
+    scene_pixels: Vec<Block>,
+    old_pixels: Vec<Block>,
+    prefix_pixels: Vec<Block>,
     prefix_key: u64,
+    pub prefix_renders: usize,
+    old_valid: bool,
+    pub texture_loads: usize,
+    pub scene_renders: usize,
 }
 #[repr(C)]
 struct Vertex {
@@ -103,7 +101,14 @@ impl Gpu {
             clock: 0,
             queued: 0,
             scene_key: 0,
+            scene_pixels: vec![Block([0; 16]); 512 * 512 / 4],
+            old_pixels: vec![Block([0; 16]); 512 * 512 / 4],
+            prefix_pixels: vec![Block([0; 16]); 512 * 512 / 4],
             prefix_key: 0,
+            prefix_renders: 0,
+            old_valid: false,
+            texture_loads: 0,
+            scene_renders: 0,
         };
         unsafe {
             sceGuInit();
@@ -163,6 +168,8 @@ impl Gpu {
                 }
             }
             if key != self.scene_key {
+                self.old_valid = self.scene_key != 0;
+                core::mem::swap(&mut self.scene_pixels, &mut self.old_pixels);
                 let mut scene = Frame::new();
                 scene.clear = frame.clear;
                 if frame.prefix_len > 0 {
@@ -183,19 +190,39 @@ impl Gpu {
                         prefix.clear = frame.clear;
                         prefix.draws = frame.draws[..frame.prefix_len].to_vec();
                         self.draw(&prefix, root, 0);
+                        unsafe {
+                            self.start(0);
+                            sceGuCopyImage(
+                                DisplayPixelFormat::Psm8888,
+                                0,
+                                0,
+                                480,
+                                272,
+                                512,
+                                0x04000000usize as *mut c_void,
+                                0,
+                                0,
+                                512,
+                                self.prefix_pixels.as_mut_ptr().cast(),
+                            );
+                            self.finish();
+                            sceKernelDcacheInvalidateRange(
+                                self.prefix_pixels.as_mut_ptr().cast(),
+                                512 * 272 * 4,
+                            );
+                        }
                         self.prefix_key = prefix_key;
+                        self.prefix_renders += 1;
                     }
-                    for (top, height) in [(0, 256), (256, 16)] {
-                        scene.draws.push(Draw {
-                            file: if top == 0 { "@prefix" } else { "@prefixbottom" }.into(),
-                            tw: 512,
-                            th: if top == 0 { 256 } else { 32 },
-                            font: false,
-                            xy: [0., top as f32, 480., (top + height) as f32],
-                            uv: [0., 0., 480., height as f32],
-                            color: 0xffffffff,
-                        });
-                    }
+                    scene.draws.push(Draw {
+                        file: "@prefix".into(),
+                        tw: 512,
+                        th: 512,
+                        font: false,
+                        xy: [0., 0., 480., 272.],
+                        uv: [0., 0., 480., 272.],
+                        color: 0xffffffff,
+                    });
                     scene
                         .draws
                         .extend_from_slice(&frame.draws[frame.prefix_len..frame.scene_len]);
@@ -203,25 +230,68 @@ impl Gpu {
                     scene.draws = frame.draws[..frame.scene_len].to_vec();
                 }
                 self.draw(&scene, root, 2);
+                unsafe {
+                    self.start(2);
+                    sceGuCopyImage(
+                        DisplayPixelFormat::Psm8888,
+                        0,
+                        0,
+                        480,
+                        272,
+                        512,
+                        0x04110000usize as *mut c_void,
+                        0,
+                        0,
+                        512,
+                        self.scene_pixels.as_mut_ptr().cast(),
+                    );
+                    self.finish();
+                    sceKernelDcacheInvalidateRange(
+                        self.scene_pixels.as_mut_ptr().cast(),
+                        512 * 272 * 4,
+                    );
+                }
                 self.scene_key = key;
+                self.scene_renders += 1;
             }
             let mut composed = Frame::new();
-            for (top, height) in [(0, 256), (256, 16)] {
+            composed.clear = frame.clear;
+            if frame.fade_alpha < 255 && self.old_valid {
                 composed.draws.push(Draw {
-                    file: if top == 0 { "@scene" } else { "@bottom" }.into(),
+                    file: "@old".into(),
                     tw: 512,
-                    th: if top == 0 { 256 } else { 32 },
+                    th: 512,
                     font: false,
-                    xy: [0., top as f32, 480., (top + height) as f32],
-                    uv: [0., 0., 480., height as f32],
+                    xy: [0., 0., 480., 272.],
+                    uv: [0., 0., 480., 272.],
                     color: 0xffffffff,
                 });
             }
+            composed.draws.push(Draw {
+                file: "@scene".into(),
+                tw: 512,
+                th: 512,
+                font: false,
+                xy: [
+                    frame.offset[0],
+                    frame.offset[1],
+                    480. + frame.offset[0],
+                    272. + frame.offset[1],
+                ],
+                uv: [0., 0., 480., 272.],
+                color: (if self.old_valid {
+                    frame.fade_alpha
+                } else {
+                    255
+                }) << 24
+                    | 0xffffff,
+            });
             composed
                 .draws
                 .extend_from_slice(&frame.draws[frame.scene_len..]);
             self.draw(&composed, root, buffer);
         } else {
+            self.scene_key = 0;
             self.draw(frame, root, buffer);
         }
         unsafe {
@@ -253,15 +323,13 @@ impl Gpu {
                         512,
                         d.th as i32,
                         512,
-                        ((if d.file.starts_with("@prefix") {
-                            0x04000000usize
+                        if d.file == "@prefix" {
+                            self.prefix_pixels.as_ptr().cast()
+                        } else if d.file == "@old" {
+                            self.old_pixels.as_ptr().cast()
                         } else {
-                            0x04110000usize
-                        }) + if d.file.ends_with("bottom") || d.file == "@bottom" {
-                            256 * 512 * 4
-                        } else {
-                            0
-                        }) as *const c_void,
+                            self.scene_pixels.as_ptr().cast()
+                        },
                     );
                     sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
                     sceGuTexFlush();
@@ -269,21 +337,34 @@ impl Gpu {
                     sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
                     if !self.cache.contains_key(&d.file) {
                         self.finish();
+                        let required = if d.font {
+                            d.tw * d.th
+                        } else {
+                            d.tw * d.th * 4 * 21 / 16
+                        };
                         while self
                             .cache
                             .values()
                             .map(|c| c.data.len() * 16)
                             .sum::<usize>()
-                            > 4 * 1024 * 1024
+                            + required
+                            > 3 * 1024 * 1024
                         {
                             let key = self
                                 .cache
                                 .iter()
+                                .filter(|(k, _)| {
+                                    !matches!(
+                                        k.as_str(),
+                                        "F08P00.RAW" | "F10P00.RAW" | "F12P00.RAW" | "F18P00.RAW"
+                                    )
+                                })
                                 .min_by_key(|(_, v)| v.used)
                                 .map(|(k, _)| k.clone())
                                 .unwrap();
                             self.cache.remove(&key);
                         }
+                        self.texture_loads += 1;
                         if let Ok(bytes) = crate::io::read(alloc::format!("{root}/DATA/{}", d.file))
                         {
                             let bytes = if d.file.ends_with(".ZTX") {

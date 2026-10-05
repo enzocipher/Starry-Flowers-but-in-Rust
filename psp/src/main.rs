@@ -142,8 +142,8 @@ fn menu(r: &mut Renderer, title: &str, labels: &[String], selected: usize) {
 fn settings_scene(r: &mut Renderer, story: &Story, p: &Prefs, selected: usize) {
     r.frame.fill(WHITE);
     r.image("ui game_menu", 0, 0, Some((W, H)), 255, false);
-    // Render settings directly: cached VRAM surfaces can alias menu previews.
-    r.frame.scene_len = 0;
+    // Cache only the static background; controls remain responsive overlays.
+    r.frame.scene_len = r.frame.draws.len();
     r.frame.prefix_sealed = true;
     let tr = |s: &str| story.translate(s, &p.lang);
     r.text(&tr("Options"), 22, 12, 18, BLUE);
@@ -350,6 +350,8 @@ fn psp_main() {
     let mut frames = 0;
     let mut notice = String::new();
     let mut notice_until = 0.;
+    let mut slot_labels: Vec<String> = Vec::new();
+    let mut slots_page: Option<Page> = None;
     loop {
         let time = now();
         unsafe {
@@ -377,6 +379,14 @@ fn psp_main() {
             state.start(&story, "start");
             stop = state.run(&story);
             page = Page::Game;
+        }
+        if audit && frames == 90 && io::exists(&format!("{root}/DATA/PERF")) {
+            let result = audit::performance(&mut r, &story);
+            save("PERF", &result);
+            unsafe {
+                sys::sceKernelExitGame();
+            }
+            return;
         }
         if audit && frames == 90 {
             screenshot(&mut r, "PSP-DIALOGUE");
@@ -700,19 +710,25 @@ fn psp_main() {
                         .iter()
                         .map(|label| story.translate(label, &p.lang))
                         .collect(),
-                    _ => (1..=6)
-                        .map(|slot| {
-                            format!(
-                                "Slot {slot}: {}",
-                                load::<State>(&format!("SLOT{slot}"))
-                                    .map(|s| clean_text(&s.text)
-                                        .chars()
-                                        .take(35)
-                                        .collect::<String>())
-                                    .unwrap_or("Empty".into())
-                            )
-                        })
-                        .collect(),
+                    _ => {
+                        if slots_page != Some(page) {
+                            slot_labels = (1..=6)
+                                .map(|slot| {
+                                    format!(
+                                        "Slot {slot}: {}",
+                                        load::<State>(&format!("SLOT{slot}"))
+                                            .map(|s| clean_text(&s.text)
+                                                .chars()
+                                                .take(35)
+                                                .collect::<String>())
+                                            .unwrap_or("Empty".into())
+                                    )
+                                })
+                                .collect();
+                            slots_page = Some(page);
+                        }
+                        slot_labels.clone()
+                    }
                 };
                 let len = labels.len();
                 if pressed.contains(B::UP) {
@@ -792,6 +808,7 @@ fn psp_main() {
                             selected = 0;
                         }
                         Page::Save => {
+                            slots_page = None;
                             notice = if save(&format!("SLOT{}", selected + 1), &state) {
                                 "Game saved"
                             } else {
@@ -802,7 +819,9 @@ fn psp_main() {
                             save("PREFS", &p);
                         }
                         Page::Load => {
-                            if let Some(s) = load::<State>(&format!("SLOT{}", selected + 1)) {
+                            if let Some(s) = load::<State>(&format!("SLOT{}", selected + 1))
+                                .filter(|s| s.pc > 0 && s.pc <= story.ops.len())
+                            {
                                 state = s;
                                 stop = match story.ops[state.pc - 1].op.as_str() {
                                     "menu" => Stop::Menu,
@@ -929,6 +948,9 @@ fn psp_main() {
             !state.sound.is_empty(),
         );
         state.sound.clear();
+        if page != Page::Save && page != Page::Load {
+            slots_page = None;
+        }
         r.present(buffer);
         buffer = 1 - buffer;
         frames += 1;
