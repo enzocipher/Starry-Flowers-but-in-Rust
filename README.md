@@ -2,6 +2,8 @@
 
 Adaptación del juego Starry Flowers 1.7.4 de NomnomNami. Ejecuta la historia con un motor nativo en Rust y Macroquad: no utiliza Python ni Ren'Py en tiempo de ejecución. Los textos, ilustraciones, música y traducciones proceden de la copia original de esta carpeta.
 
+"Es el mismo juego, pero una versión inferior"
+
 ## Jugar
 
 Abre `dist/StarryFlowersRust/StarryFlowersRust.exe`. Mantén la carpeta `assets` junto al ejecutable. La ventana se llama **Starry Flowers** y usa el icono original. El idioma inicial es inglés; las traducciones originales están disponibles en Options → Language… con sus fuentes correspondientes.
