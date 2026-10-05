@@ -1,0 +1,13 @@
+[package]
+name = "starryflowers-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macroquad = { version = "0.4.16", features = ["audio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true

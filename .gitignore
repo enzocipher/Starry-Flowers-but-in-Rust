@@ -1,0 +1,6 @@
+/target/
+/target-final/
+/assets/
+/dist/
+/smoke*.png
+__pycache__/
