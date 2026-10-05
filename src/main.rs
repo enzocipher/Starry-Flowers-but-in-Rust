@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod engine;
+mod layout;
 mod preferences;
 use engine::*;
 use macroquad::{audio::*, prelude::*};
@@ -122,6 +123,7 @@ fn read_json<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
     serde_json::from_slice(&std::fs::read(save_dir().join(name)).ok()?).ok()
 }
 struct Art {
+    layouts: std::cell::RefCell<HashMap<layout::Key, Vec<layout::Line>>>,
     textures: HashMap<String, Texture2D>,
     font: Font,
     sounds: HashMap<String, Sound>,
@@ -368,7 +370,45 @@ impl Art {
             );
         }
     }
+    fn text_width(&self, text: &str, size: u16) -> f32 {
+        text.split('💙')
+            .map(|part| measure_text(part, Some(&self.font), size, 1.).width)
+            .sum::<f32>()
+            + text.matches('💙').count() as f32 * size as f32 * 0.85
+    }
     fn text(&self, s: &str, x: f32, y: f32, size: u16, color: Color) {
+        if s.contains('💙') {
+            let mut cursor = x;
+            for (index, part) in s.split('💙').enumerate() {
+                if index > 0 {
+                    let scale = size as f32;
+                    let center = vec2(cursor + scale * 0.425, y - scale * 0.40);
+                    let point = |step: usize| {
+                        let t = step as f32 * std::f32::consts::TAU / 64.;
+                        center
+                            + vec2(
+                                16. * t.sin().powi(3),
+                                -(13. * t.cos()
+                                    - 5. * (2. * t).cos()
+                                    - 2. * (3. * t).cos()
+                                    - (4. * t).cos()),
+                            ) * (scale * 0.024)
+                    };
+                    for step in 0..64 {
+                        draw_triangle(
+                            center,
+                            point(step),
+                            point(step + 1),
+                            Color::from_rgba(88, 163, 255, (color.a * 255.) as u8),
+                        );
+                    }
+                    cursor += scale * 0.85;
+                }
+                self.text(part, cursor, y, size, color);
+                cursor += measure_text(part, Some(&self.font), size, 1.).width;
+            }
+            return;
+        }
         draw_text_ex(
             s,
             x,
@@ -382,30 +422,98 @@ impl Art {
         );
     }
     fn wrap(&self, s: &str, x: f32, y: f32, width: f32, size: u16) -> f32 {
-        let mut cy = y;
-        let mut line = String::new();
-        for paragraph in clean_text(s).split('\n') {
-            for word in paragraph.split_whitespace() {
-                let candidate = if line.is_empty() {
-                    word.into()
-                } else {
-                    format!("{line} {word}")
-                };
-                if measure_text(&candidate, Some(&self.font), size, 1.).width > width
-                    && !line.is_empty()
-                {
-                    self.text(&line, x, cy, size, INK);
-                    cy += size as f32 * 1.35;
-                    line = word.into();
-                } else {
-                    line = candidate;
-                }
-            }
-            self.text(&line, x, cy, size, INK);
-            line.clear();
-            cy += size as f32 * 1.35;
+        let lines = self.lines(s, width, size);
+        for (i, line) in lines.iter().enumerate() {
+            self.text(&line.text, x, y + i as f32 * size as f32 * 1.35, size, INK);
         }
-        cy
+        y + lines.len() as f32 * size as f32 * 1.35
+    }
+    fn lines(&self, text: &str, width: f32, size: u16) -> Vec<layout::Line> {
+        let key = layout::Key {
+            text: clean_text(text),
+            size,
+            width: width.to_bits(),
+            font: self.font_lang.clone(),
+        };
+        if let Some(lines) = self.layouts.borrow().get(&key) {
+            return lines.clone();
+        }
+        let lines = layout::wrap(&key.text, width, |s| self.text_width(s, size));
+        let mut cache = self.layouts.borrow_mut();
+        if cache.len() > 300 {
+            cache.clear();
+        }
+        cache.insert(key, lines.clone());
+        lines
+    }
+    fn fitted(&self, text: &str, width: f32, height: f32) -> (u16, Vec<layout::Line>) {
+        for size in (12..=32).rev() {
+            let lines = self.lines(text, width, size);
+            if lines.len() as f32 * size as f32 * 1.35 <= height {
+                return (size, lines);
+            }
+        }
+        (12, self.lines(text, width, 12))
+    }
+    fn flow(
+        &self,
+        lines: &[layout::Line],
+        revealed: usize,
+        x: f32,
+        top: f32,
+        size: u16,
+        color: Color,
+    ) {
+        let ascent = measure_text("Ágj", Some(&self.font), size, 1.).offset_y;
+        for (i, line) in lines.iter().enumerate() {
+            let count = revealed
+                .saturating_sub(line.start)
+                .min(line.end - line.start);
+            let text: String = line.text.chars().take(count).collect();
+            self.text(
+                &text,
+                x,
+                top + ascent + i as f32 * size as f32 * 1.35,
+                size,
+                color,
+            );
+        }
+    }
+    fn speaker(&self, who: &str, name: &str, x: f32, top: f32) -> f32 {
+        self.speaker_sized(who, name, x, top, 38)
+    }
+    fn speaker_sized(&self, who: &str, name: &str, x: f32, top: f32, size: u16) -> f32 {
+        let (outer, inner) = match who {
+            "p" => (0xffdaed, 0xb84d75),
+            "w" => (0xbedbff, 0x5083c1),
+            "a" => (0xf3daff, 0xa25898),
+            "c" => (0xffe3da, 0xa26658),
+            "j" => (0xe6daff, 0x6e58a2),
+            "k" => (0xfcdaff, 0xa2589d),
+            "r" => (0xe0b0d7, 0xa74a7c),
+            "u" => (0xeda97e, 0xa76e4a),
+            "h" => (0xed7e8b, 0xa43956),
+            "g" => (0xffa3d2, 0xad1b52),
+            _ => (0xbedbff, 0x5083c1),
+        };
+        let rgb = |n: u32| Color::from_rgba((n >> 16) as u8, (n >> 8) as u8, n as u8, 255);
+        let metrics = measure_text(name, Some(&self.font), size, 1.);
+        let baseline = top + metrics.offset_y;
+        for (radius, color) in [(8., rgb(outer)), (4., rgb(inner))] {
+            for step in 0..32 {
+                let radius = radius * size as f32 / 38.;
+                let angle = step as f32 * std::f32::consts::TAU / 32.;
+                self.text(
+                    name,
+                    x + angle.cos() * radius,
+                    baseline + angle.sin() * radius,
+                    size,
+                    color,
+                );
+            }
+        }
+        self.text(name, x, baseline, size, WHITE);
+        metrics.width
     }
 }
 fn layers(sprite: &Sprite, state: &State, story: &Story) -> Vec<String> {
@@ -747,10 +855,26 @@ fn text_button(art: &Art, label: &str, r: Rect, title: bool) -> bool {
     );
     hover && is_mouse_button_pressed(MouseButton::Left)
 }
-fn quick_button(art: &Art, label: &str, r: Rect) -> bool {
+fn quick_button(art: &Art, label: &str, r: Rect, selected: bool) -> bool {
     let label = art.ui.get(label).map(String::as_str).unwrap_or(label);
     let hover = r.contains(mouse());
-    art.text(label, r.x, r.y + 20., 18, if hover { BLUE } else { INK });
+    art.text(
+        label,
+        r.x,
+        r.y + 20.,
+        18,
+        if hover || selected { BLUE } else { INK },
+    );
+    if selected {
+        draw_line(
+            r.x,
+            r.y + 24.,
+            r.x + art.text_width(label, 18),
+            r.y + 24.,
+            2.,
+            BLUE,
+        );
+    }
     hover && is_mouse_button_pressed(MouseButton::Left)
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -805,6 +929,7 @@ async fn main() {
         .await
         .expect("Missing font: keep assets next to exe");
     let mut art = Art {
+        layouts: std::cell::RefCell::new(HashMap::new()),
         textures: HashMap::new(),
         font,
         sounds: HashMap::new(),
@@ -868,6 +993,63 @@ async fn main() {
         .find_map(|s| s.strip_prefix("--smoke=").map(str::to_owned))
         .unwrap_or_else(|| "dialogue".into());
     let smoke = std::env::args().any(|s| s.starts_with("--smoke"));
+    if std::env::args().any(|s| s == "--audit-layout") {
+        let mut checked = 0;
+        for lang in ["", "es"] {
+            art.font_for(lang).await;
+            for label in [
+                "start", "ch0", "ch4b", "ch7b", "ex1", "ex2", "ex3", "ex4", "ex5",
+            ] {
+                let mut sample = State::default();
+                sample.start(&story, label);
+                loop {
+                    match sample.run(&story) {
+                        Stop::Menu => sample.pc = story.ops[sample.pc - 1].choices[1].target,
+                        Stop::End => break,
+                        Stop::Say => {
+                            if sample.who == "centered" {
+                                continue;
+                            }
+                            let (text, width, height) = if sample.nvl_mode {
+                                (
+                                    sample
+                                        .nvl
+                                        .iter()
+                                        .map(|s| clean_text(&story.translate(s, lang)))
+                                        .collect::<Vec<_>>()
+                                        .join("\n\n"),
+                                    780.,
+                                    610.,
+                                )
+                            } else {
+                                (story.translate(&sample.text, lang), 692., 300.)
+                            };
+                            let (size, lines) = art.fitted(&text, width, height);
+                            assert!(
+                                lines.len() as f32 * size as f32 * 1.35 <= height,
+                                "Vertical overflow: {lang} / {label} / {}",
+                                sample.pc
+                            );
+                            for line in lines {
+                                assert!(
+                                    measure_text(&line.text, Some(&art.font), size, 1.).width
+                                        <= width + 0.1,
+                                    "Horizontal overflow: {lang} / {label}"
+                                );
+                            }
+                            checked += 1;
+                            if checked % 100 == 0 {
+                                next_frame().await;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        std::fs::write("layout-audit.txt",format!("Passed {checked} dialogue and narration layouts using the original fonts in English and Spanish. No horizontal or vertical overflow.\n")).unwrap();
+        return;
+    }
     let mut frames = 0;
     if smoke {
         state.start(&story, "start");
@@ -903,9 +1085,71 @@ async fn main() {
                     stop = state.run(&story);
                 }
             }
+            "heart" => {
+                state.who = "w".into();
+                state.nvl_mode = false;
+                state.text = story
+                    .ops
+                    .iter()
+                    .find(|op| op.op == "say" && op.text.contains('💙'))
+                    .unwrap()
+                    .text
+                    .clone();
+                stop = Stop::Say;
+            }
+            "long-text" => {
+                state.who = "p".into();
+                state.nvl_mode = false;
+                let longest = story
+                    .ops
+                    .iter()
+                    .filter(|op| op.op == "say" && !op.who.is_empty() && op.who != "centered")
+                    .max_by_key(|op| story.translate(&op.text, &prefs.lang).chars().count())
+                    .unwrap();
+                state.text = longest.text.clone();
+                stop = Stop::Say;
+            }
+            "narration" => {
+                state.nvl_mode = true;
+                state.who.clear();
+                let mut paragraphs: Vec<_> = story
+                    .ops
+                    .iter()
+                    .filter(|op| op.op == "say" && op.who.is_empty())
+                    .collect();
+                paragraphs.sort_by_key(|op| std::cmp::Reverse(op.text.chars().count()));
+                state.nvl = paragraphs
+                    .iter()
+                    .take(6)
+                    .map(|op| op.text.clone())
+                    .collect();
+                state.text = state.nvl.last().unwrap().clone();
+                stop = Stop::Say;
+            }
             "gallery" => {
                 prefs.clear = true;
                 page = Page::Gallery;
+            }
+            "history" => {
+                let mut entries: Vec<_> = story
+                    .ops
+                    .iter()
+                    .filter(|op| op.op == "say" && !op.who.is_empty() && op.who != "centered")
+                    .collect();
+                entries.sort_by_key(|op| {
+                    std::cmp::Reverse(story.translate(&op.text, &prefs.lang).chars().count())
+                });
+                history = entries
+                    .iter()
+                    .take(5)
+                    .map(|op| State {
+                        who: op.who.clone(),
+                        text: op.text.clone(),
+                        ..Default::default()
+                    })
+                    .collect();
+                page = Page::History;
+                return_page = Page::Game;
             }
             "credits" => {
                 state.start(&story, "credits");
@@ -938,6 +1182,9 @@ async fn main() {
         }
         if page == Page::Game && is_key_pressed(KeyCode::Tab) {
             skipping = !skipping;
+            if skipping {
+                auto = false;
+            }
         }
         if page == Page::Game && is_key_pressed(KeyCode::H) {
             hide_dialogue = !hide_dialogue;
@@ -950,8 +1197,12 @@ async fn main() {
             fullscreen = prefs.fullscreen;
             set_fullscreen(fullscreen);
         }
-        let skip_active =
-            (skipping || is_key_down(KeyCode::LeftControl)) && prefs.can_skip(state.pc);
+        if skipping && stop == Stop::Say && !prefs.can_skip(state.pc) {
+            skipping = false;
+        }
+        let skip_active = !smoke
+            && (skipping || is_key_down(KeyCode::LeftControl))
+            && (matches!(stop, Stop::Pause(_)) || prefs.can_skip(state.pc));
         art.animate = !(skip_active && prefs.skip_transitions);
         clear_background(BLACK);
         let scale = (screen_width() / 1280.).min(screen_height() / 720.);
@@ -1065,19 +1316,36 @@ async fn main() {
                 reveal_all || skip_active,
             );
             let text_complete = shown == clean_text(&translated);
+            // A displayed line is read even when the player has not advanced yet.
+            // Persist immediately so closing the window preserves skip eligibility.
+            if !smoke && stop == Stop::Say && text_complete && prefs.mark_read(state.pc) {
+                let _ = write_json("preferences.json", &prefs);
+            }
             if !hide_dialogue && state.nvl_mode && stop == Stop::Say {
                 art.image("ui nvl", 0., 0., 1280., 720.);
-                let mut y = 110.;
-                for (i, text) in state.nvl.iter().enumerate() {
-                    let display = if i + 1 == state.nvl.len() {
-                        shown.clone()
-                    } else {
-                        story.translate(text, &prefs.lang)
-                    };
-                    y = art.wrap(&display, 110., y, 1060., 32) + 16.;
-                }
+                let paragraphs: Vec<String> = state
+                    .nvl
+                    .iter()
+                    .map(|text| clean_text(&story.translate(text, &prefs.lang)))
+                    .collect();
+                let full = paragraphs.join("\n\n");
+                let prefix = if paragraphs.len() > 1 {
+                    paragraphs[..paragraphs.len() - 1]
+                        .join("\n\n")
+                        .chars()
+                        .count()
+                        + 2
+                } else {
+                    0
+                };
+                let (size, lines) = art.fitted(&full, 780., 610.);
+                art.flow(&lines, prefix + shown.chars().count(), 240., 48., size, INK);
             } else if !hide_dialogue && stop == Stop::Say && state.who != "centered" {
-                art.image("ui textbox", 0., 535., 1280., 185.);
+                let (size, lines) = art.fitted(&translated, 692., 300.);
+                let body_height = lines.len() as f32 * size as f32 * 1.35;
+                let box_height = (34. + body_height + 50.).max(200.);
+                let box_top = 720. - box_height;
+                art.image("ui textbox", 0., box_top + 15., 1280., box_height - 15.);
                 if state.who == "w" {
                     let portrait = Sprite {
                         tag: "side_peri".into(),
@@ -1092,10 +1360,30 @@ async fn main() {
                 }
                 let who = character_name(&state.who);
                 if !who.is_empty() {
-                    art.image("ui namebox", 340., 490., 300., 36.);
-                    art.text(who, 345., 521., 38, BLUE);
+                    let metrics = measure_text(who, Some(&art.font), 38, 1.);
+                    let name_top = box_top - 30.;
+                    art.image(
+                        "ui namebox",
+                        340.,
+                        name_top - 8.,
+                        metrics.width + 26.,
+                        metrics.height + 16.,
+                    );
+                    art.speaker(&state.who, who, 345., name_top);
                 }
-                art.wrap(&shown, 380., 586., 692., 32);
+                let color = if state.who == "n" {
+                    Color::from_rgba(121, 119, 152, 255)
+                } else {
+                    INK
+                };
+                art.flow(
+                    &lines,
+                    shown.chars().count(),
+                    380.,
+                    box_top + 34.,
+                    size,
+                    color,
+                );
             }
             let mut advance = false;
             if stop == Stop::Say
@@ -1181,7 +1469,12 @@ async fn main() {
                 advance = true;
             }
             let click = is_mouse_button_pressed(MouseButton::Left) && mouse().y < 670.;
-            let manual = is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) || click;
+            let manual = !smoke
+                && (is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) || click);
+            if manual {
+                auto = false;
+                skipping = false;
+            }
             if matches!(stop, Stop::Say | Stop::Pause(_))
                 && (manual || skip_active || (auto && text_complete && get_time() > next_auto))
             {
@@ -1228,6 +1521,7 @@ async fn main() {
                             if i == 4 { 130. } else { 85. },
                             30.,
                         ),
+                        (i == 1 && skipping) || (i == 2 && auto),
                     ) {
                         match i {
                             0 => {
@@ -1238,9 +1532,17 @@ async fn main() {
                                     advance = false;
                                 }
                             }
-                            1 => skipping = !skipping,
+                            1 => {
+                                skipping = !skipping;
+                                if skipping {
+                                    auto = false;
+                                }
+                            }
                             2 => {
                                 auto = !auto;
+                                if auto {
+                                    skipping = false;
+                                }
                                 next_auto =
                                     get_time() + prefs.auto_delay(translated.chars().count());
                             }
@@ -1256,8 +1558,8 @@ async fn main() {
             }
             if advance && page == Page::Game {
                 if stop == Stop::Say {
-                    if !prefs.read.contains(&state.pc) {
-                        prefs.read.push(state.pc);
+                    if prefs.mark_read(state.pc) && !smoke {
+                        let _ = write_json("preferences.json", &prefs);
                     }
                     history.push(state.clone());
                     if history.len() > 250 {
@@ -1419,10 +1721,30 @@ async fn main() {
                 art.text(&story.translate("History", &prefs.lang), 60., 70., 40, BLUE);
                 let start = history.len().saturating_sub(5 + history_offset);
                 let end = (start + 5).min(history.len());
-                let mut y = 120.;
-                for s in &history[start..end] {
-                    art.text(character_name(&s.who), 370., y, 24, BLUE);
-                    y = art.wrap(&story.translate(&s.text, &prefs.lang), 590., y, 600., 23) + 22.;
+                let entries: Vec<_> = history[start..end]
+                    .iter()
+                    .map(|entry| (entry, story.translate(&entry.text, &prefs.lang)))
+                    .collect();
+                let size = (12..=23)
+                    .rev()
+                    .find(|size| {
+                        entries
+                            .iter()
+                            .map(|(_, text)| {
+                                (art.lines(text, 600., *size).len() as f32 * *size as f32 * 1.35)
+                                    .max(32.)
+                                    + 20.
+                            })
+                            .sum::<f32>()
+                            <= 460.
+                    })
+                    .unwrap_or(12);
+                let mut top = 115.;
+                for (entry, text) in entries {
+                    let lines = art.lines(&text, 600., size);
+                    art.speaker_sized(&entry.who, character_name(&entry.who), 370., top, 24);
+                    art.flow(&lines, usize::MAX, 590., top, size, INK);
+                    top += (lines.len() as f32 * size as f32 * 1.35).max(32.) + 20.;
                 }
                 if button(&art, "Previous", Rect::new(380., 590., 250., 55.)) {
                     history_offset = (history_offset + 5).min(history.len().saturating_sub(5));

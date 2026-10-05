@@ -45,8 +45,14 @@ Todavía hay diferencias: algunas transiciones de escena, partículas y movimien
 
 Los ajustes de la primera versión se actualizan al abrir esta versión: el idioma inicial pasa a inglés, conservando partidas, favoritos y desbloqueos. Las elecciones de idioma posteriores se guardan normalmente.
 
+Los nombres usan la fuente original Nunito Bold (o la correspondiente al idioma), relleno blanco y los contornos de cada personaje: rosa para Pastille, celeste para Periwinkle y las paletas originales para los demás. El diálogo se ajusta por las medidas de la fuente completa, con saltos de línea estables durante la aparición gradual. La caja crece cuando hace falta; la narración y el historial ajustan el tamaño para respetar sus áreas y dejar libres los controles.
+
 ## Verificación
 
-Las 10 pruebas recorren ambas elecciones iniciales hasta el final, las ocho escenas extra, la traducción española, la serialización, los recursos, la conservación de los shakes y su curva temporal, los valores de ajustes, la migración y el texto gradual Unicode. `--smoke=dialogue`, `--smoke=portrait`, `--smoke=dress`, `--smoke=title`, `--smoke=gallery`, `--smoke=credits`, `--smoke=settings`, `--smoke=language` y `--smoke=shake` exportan capturas y cierran la ventana. Esto no sustituye una revisión manual completa de todas las escenas.
+La auditoría `--audit-layout` comprobó 5.038 diálogos y páginas de narración en inglés y español con las fuentes originales, sin desbordamiento horizontal ni vertical. Las capturas `--smoke=long-text`, `--smoke=narration` y `--smoke=history` cubren casos de texto largo.
+
+Las 14 pruebas recorren ambas elecciones iniciales hasta el final, las ocho escenas extra, la traducción española, la serialización, los recursos, la conservación de los shakes y su curva temporal, los valores de ajustes, la migración y el texto gradual Unicode. `--smoke=dialogue`, `--smoke=portrait`, `--smoke=dress`, `--smoke=title`, `--smoke=gallery`, `--smoke=credits`, `--smoke=settings`, `--smoke=language` y `--smoke=shake` exportan capturas y cierran la ventana. Esto no sustituye una revisión manual completa de todas las escenas.
 
 Autoría original: historia, arte y música por **NomnomNami**; tema final **“Pretty in Pink”**, por **Marlene Bellissimo**. Se conserva la copia original y sus archivos de atribución. Este paquete local no cambia la autoría ni la licencia de los recursos originales.
+
+El texto leído se registra al terminar de aparecer y se guarda inmediatamente. Saltar se detiene al llegar a texto no leído (salvo la opción de saltarlo también); Auto avanza tras mostrar el diálogo y esperar el tiempo configurado. El modo activo aparece subrayado. Avanzar manualmente desactiva ambos modos.

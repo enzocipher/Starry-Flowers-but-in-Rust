@@ -53,10 +53,14 @@ impl Preferences {
         }
     }
     pub fn auto_delay(&self, len: usize) -> f64 {
-        if self.afm_time <= 0. {
-            return f64::INFINITY;
+        self.afm_time.max(0.) as f64 * (25. + len as f64) / 250.
+    }
+    pub fn mark_read(&mut self, pc: usize) -> bool {
+        if self.read.contains(&pc) {
+            return false;
         }
-        self.afm_time as f64 * (25. + len as f64) / 250.
+        self.read.push(pc);
+        true
     }
     pub fn can_skip(&self, pc: usize) -> bool {
         self.skip_unseen || self.read.contains(&pc)
@@ -338,5 +342,32 @@ mod tests {
         assert!(!p.can_skip(43));
         assert!(p.auto_delay(250) > p.auto_delay(10));
         assert_eq!(p.auto_delay(75), 6.);
+    }
+    #[test]
+    fn read_dialogue_survives_restart_and_stops_at_unread() {
+        let story = crate::engine::Story::load();
+        let mut state = crate::engine::State::default();
+        state.start(&story, "start");
+        while state.run(&story) != crate::engine::Stop::Say {}
+        let previous = state.clone();
+        let mut p = Preferences::default();
+        assert!(!p.can_skip(state.pc));
+        assert!(p.mark_read(state.pc));
+        assert!(!p.mark_read(state.pc));
+        let restored: Preferences =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert!(restored.can_skip(previous.pc));
+        while state.run(&story) != crate::engine::Stop::Say {}
+        assert!(!restored.can_skip(state.pc));
+    }
+    #[test]
+    fn zero_auto_delay_advances_after_reveal() {
+        let p = Preferences {
+            afm_time: 0.,
+            ..Default::default()
+        };
+        assert_eq!(p.auto_delay(80), 0.);
+        assert_ne!(visible_text("Hello", 0., 60., false), "Hello");
+        assert_eq!(visible_text("Hello", 1., 60., false), "Hello");
     }
 }
