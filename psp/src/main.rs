@@ -44,6 +44,7 @@ struct Prefs {
     delay: f64,
     music: f32,
     sound: f32,
+    mute: bool,
     unseen: bool,
     after_choices: bool,
     transitions: bool,
@@ -57,8 +58,9 @@ impl Default for Prefs {
             lang: String::new(),
             cps: 60.,
             delay: 15.,
-            music: 1.,
+            music: 0.8,
             sound: 1.,
+            mute: false,
             unseen: false,
             after_choices: false,
             transitions: false,
@@ -136,6 +138,161 @@ fn menu(r: &mut Renderer, title: &str, labels: &[String], selected: usize) {
         r.text(label, 115, y, 12, if i == selected { BLUE } else { INK });
     }
     r.text("D-pad: select   X: confirm   O: back", 18, 253, 10, INK);
+}
+fn settings_scene(r: &mut Renderer, story: &Story, p: &Prefs, selected: usize) {
+    r.frame.fill(WHITE);
+    r.image("ui game_menu", 0, 0, Some((W, H)), 255, false);
+    // Render settings directly: cached VRAM surfaces can alias menu previews.
+    r.frame.scene_len = 0;
+    r.frame.prefix_sealed = true;
+    let tr = |s: &str| story.translate(s, &p.lang);
+    r.text(&tr("Options"), 22, 12, 18, BLUE);
+    r.text(&tr("Display"), 110, 39, 12, BLUE);
+    r.text(&tr("Skip"), 292, 39, 12, BLUE);
+    if selected == 0 {
+        r.rect(106, 59, 166, 19, 0x33ffa358);
+    }
+    r.image(
+        "ui button/radio_selected_foreground",
+        110,
+        61,
+        Some((10, 14)),
+        255,
+        false,
+    );
+    r.text(
+        &format!(
+            "{}: {}",
+            tr("Language"),
+            if p.lang.is_empty() {
+                "English"
+            } else {
+                "Español"
+            }
+        ),
+        125,
+        61,
+        12,
+        if selected == 0 { BLUE } else { INK },
+    );
+    for (index, label, on, y) in [
+        (5, "Unseen Text", p.unseen, 61),
+        (6, "After Choices", p.after_choices, 82),
+        (7, "Transitions", p.transitions, 103),
+        (8, "Mute All", p.mute, 221),
+    ] {
+        if selected == index {
+            r.rect(288, y - 2, 170, 19, 0x33ffa358);
+        }
+        r.image(
+            if on {
+                "ui button/check_selected_foreground"
+            } else {
+                "ui button/check_foreground"
+            },
+            292,
+            y,
+            Some((10, 14)),
+            255,
+            false,
+        );
+        r.label(
+            &tr(label),
+            307,
+            y,
+            150.,
+            12,
+            if selected == index { BLUE } else { INK },
+        );
+    }
+    for (index, label, value, fraction, x, y) in [
+        (
+            1,
+            "Text Speed",
+            if p.cps == 0. {
+                "∞".into()
+            } else {
+                format!("{:.0}", p.cps)
+            },
+            if p.cps == 0. { 1. } else { p.cps / 200. },
+            110,
+            133,
+        ),
+        (
+            2,
+            "Auto-Forward Time",
+            format!("{:.0}", p.delay),
+            p.delay as f32 / 30.,
+            110,
+            177,
+        ),
+        (
+            3,
+            "Music Volume",
+            format!("{:.0}%", p.music * 100.),
+            p.music,
+            292,
+            133,
+        ),
+        (
+            4,
+            "Sound Volume",
+            format!("{:.0}%", p.sound * 100.),
+            p.sound,
+            292,
+            177,
+        ),
+    ] {
+        if selected == index {
+            r.rect(x - 4, y - 2, 170, 36, 0x22ffa358);
+        }
+        r.label(
+            &tr(label),
+            x,
+            y,
+            148. - r.width(&value, 10),
+            12,
+            if selected == index { BLUE } else { INK },
+        );
+        r.text(&value, x + 155 - r.width(&value, 10) as i32, y, 10, INK);
+        r.image(
+            "ui slider/horizontal_idle_bar",
+            x,
+            y + 16,
+            Some((156, 16)),
+            255,
+            false,
+        );
+        r.image_progress(
+            if selected == index {
+                "ui slider/horizontal_hover_bar2"
+            } else {
+                "ui slider/horizontal_idle_bar2"
+            },
+            x as f32,
+            (y + 16) as f32,
+            156.,
+            16.,
+            fraction,
+        );
+    }
+    if selected == 9 {
+        r.rect(106, 219, 166, 19, 0x33ffa358);
+    }
+    r.text(
+        &tr("Return"),
+        110,
+        221,
+        12,
+        if selected == 9 { BLUE } else { INK },
+    );
+    r.text(
+        "D-pad: select   Left/Right: adjust   X: toggle   O: back",
+        18,
+        253,
+        10,
+        INK,
+    );
 }
 fn dress_scene(r: &mut Renderer, state: &State, story: &Story) {
     r.frame.fill(WHITE);
@@ -234,13 +391,17 @@ fn psp_main() {
         }
         match page {
             Page::Title => {
-                state.music = "date".into();
+                state.music = "romance".into();
                 r.frame.fill(WHITE);
-                r.image("ui main_menu", 0, 0, Some((W, H)), 255, false);
+                if p.clear {
+                    r.image("bg starfield", 0, -210, Some((480, 480)), 255, false);
+                } else {
+                    r.image("ui main_menu", 0, 0, Some((W, H)), 255, false);
+                }
                 r.image("titlelogo", 105, 27, Some((270, 135)), 255, false);
                 r.frame.scene_len = r.frame.draws.len();
                 r.frame.prefix_sealed = true;
-                for i in 0..20 {
+                for i in 0..if p.clear { 0 } else { 20 } {
                     let i = i as f32;
                     let x = ((i * 151. + time as f32 * 6.) % 1400. - 60.) * 0.375;
                     let y = ((i * 97. + time as f32 * 18.) % 820. - 80.) * 0.375;
@@ -532,6 +693,7 @@ fn psp_main() {
                         format!("Skip unseen text: {}", p.unseen),
                         format!("Skip after choices: {}", p.after_choices),
                         format!("Skip transitions: {}", p.transitions),
+                        format!("Mute All: {}", p.mute),
                         "Return".into(),
                     ],
                     Page::Extras => EXTRA_TITLES
@@ -559,18 +721,22 @@ fn psp_main() {
                 if pressed.contains(B::DOWN) {
                     selected = (selected + 1) % len;
                 }
-                menu(
-                    &mut r,
-                    match page {
-                        Page::Menu => "Menu",
-                        Page::Settings => "Settings",
-                        Page::Save => "Save",
-                        Page::Load => "Load",
-                        _ => "Extras",
-                    },
-                    &labels,
-                    selected,
-                );
+                if page == Page::Settings {
+                    settings_scene(&mut r, &story, &p, selected);
+                } else {
+                    menu(
+                        &mut r,
+                        match page {
+                            Page::Menu => "Menu",
+                            Page::Settings => "Settings",
+                            Page::Save => "Save",
+                            Page::Load => "Load",
+                            _ => "Extras",
+                        },
+                        &labels,
+                        selected,
+                    );
+                }
                 if circle {
                     page = if page == Page::Settings && return_page == Page::Game {
                         Page::Menu
@@ -602,6 +768,7 @@ fn psp_main() {
                             5 => p.unseen = !p.unseen,
                             6 => p.after_choices = !p.after_choices,
                             7 => p.transitions = !p.transitions,
+                            8 => p.mute = !p.mute,
                             _ => {
                                 page = return_page;
                                 selected = 0;
@@ -749,7 +916,7 @@ fn psp_main() {
                 .get(&state.music)
                 .map(String::as_str)
                 .unwrap_or(""),
-            p.music,
+            if p.mute { 0. } else { p.music },
             false,
         );
         sound.update(
@@ -758,7 +925,7 @@ fn psp_main() {
                 .get(&state.sound)
                 .map(String::as_str)
                 .unwrap_or(""),
-            p.sound,
+            if p.mute { 0. } else { p.sound },
             !state.sound.is_empty(),
         );
         state.sound.clear();

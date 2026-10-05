@@ -6,6 +6,12 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
 try {
+    if (-not (Test-Path -LiteralPath 'assets/gui/emoji/symbols.json')) {
+        & $Python tools/prepare_inline.py
+        if ($LASTEXITCODE -ne 0) { throw 'Original inline resource extraction failed.' }
+    }
+    & $Python tools/compile_story.py
+    if ($LASTEXITCODE -ne 0) { throw 'Story compilation failed.' }
     & $Python tools/prepare_psp.py
     if ($LASTEXITCODE -ne 0) { throw 'PSP resource conversion failed.' }
     Push-Location psp

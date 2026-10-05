@@ -1,5 +1,5 @@
 """Preserve original art in lossless GPU tiles, with mipmaps and 4x font atlases."""
-import hashlib, json, math, pathlib, subprocess, zlib
+import hashlib, json, math, pathlib, subprocess, zlib, shutil
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 ROOT=pathlib.Path(__file__).resolve().parents[1]
@@ -8,8 +8,10 @@ story=json.loads((ROOT/'story.json').read_text(encoding='utf-8'))
 story['translations']={k:v for k,v in story['translations'].items() if k=='es'}
 (ROOT/'psp/story.json').write_text(json.dumps(story,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
 images=dict(story['images']); images.update({'ui '+n:'gui/'+n+'.png' for n in ['main_menu','game_menu','textbox','nvl']})
-manifest={'images':{},'fonts':{},'audio':{},'version':2}
+manifest={'images':{},'fonts':{},'audio':{},'version':3,'inline_symbols':story.get('inline_symbols',{})}
 files={}; active={'MANIFEST.JSON'}
+for source,target in [('Twemoji-LICENSE.txt','TWEMOJI.TXT'),('DejaVu-LICENSE.txt','DEJAVU.TXT')]:
+ shutil.copyfile(ROOT/'assets/gui/emoji'/source,OUT/target);active.add(target)
 def power2(n): return 1<<(n-1).bit_length()
 for name,path in images.items():
  if path not in files:
@@ -30,22 +32,14 @@ for name,path in images.items():
   files[path]={'width':max(1,round(ow*.375)),'height':max(1,round(oh*.375)),'original_width':ow,'original_height':oh,'tiles':tiles}
  manifest['images'][name]=files[path]
 chars=set(''.join(op.get('text','') for op in story['ops']))
-chars.update(''.join(story['translations'].get('es',{}).values())); chars.update(chr(i) for i in range(32,256))
+chars.add('∞'); chars.update(''.join(story['translations'].get('es',{}).values())); chars.update(chr(i) for i in range(32,256))
 chars=sorted(c for c in chars if c.isprintable())
-for size in [10,12,14,18,24]:
+for size in [8,10,12,14,18,24]:
  scale=4; font=ImageFont.truetype(str(ROOT/'assets/tl/None/Nunito-Bold.ttf'),size*scale)
  pages=[Image.new('L',(512,512))]; page=0; x=y=2; row=0; glyphs={}
  for c in chars:
-  if c=='\U0001f499':
-   w=h=size*scale; glyph=Image.new('L',(w,h)); draw=ImageDraw.Draw(glyph)
-   pts=[]
-   for i in range(128):
-    t=i*math.tau/128
-    pts.append((w*.5+16*math.sin(t)**3*w*.026,h*.45-(13*math.cos(t)-5*math.cos(2*t)-2*math.cos(3*t)-math.cos(4*t))*h*.026))
-   draw.polygon(pts,fill=255); left=0; top=size*.1; advance=size*.92
-  else:
-   box=font.getbbox(c); w=max(1,box[2]-box[0]); h=max(1,box[3]-box[1]); glyph=Image.new('L',(w,h)); ImageDraw.Draw(glyph).text((-box[0],-box[1]),c,font=font,fill=255)
-   left=box[0]/scale; top=box[1]/scale; advance=font.getlength(c)/scale
+  box=font.getbbox(c); w=max(1,box[2]-box[0]); h=max(1,box[3]-box[1]); glyph=Image.new('L',(w,h)); ImageDraw.Draw(glyph).text((-box[0],-box[1]),c,font=font,fill=255)
+  left=box[0]/scale; top=box[1]/scale; advance=font.getlength(c)/scale
   if x+w+2>512: x=2;y+=row+4;row=0
   if y+h+2>512: pages.append(Image.new('L',(512,512)));page+=1;x=y=2;row=0
   pages[page].paste(glyph,(x,y)); filename=f'F{size:02}P{page:02}.RAW'
@@ -53,7 +47,7 @@ for size in [10,12,14,18,24]:
   x+=w+4;row=max(row,h)
  for index,image in enumerate(pages):
   filename=f'F{size:02}P{index:02}.RAW'; (OUT/filename).write_bytes(image.tobytes());active.add(filename)
- manifest['fonts'][str(size)]={'scale':scale,'glyphs':glyphs}
+ manifest['fonts'][str(size)]={'scale':scale,'ascent':font.getmetrics()[0]/scale,'glyphs':glyphs}
 ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
 for path in sorted((ROOT/'assets/audio').iterdir()):
  if path.suffix.lower() not in {'.ogg','.wav'}:continue

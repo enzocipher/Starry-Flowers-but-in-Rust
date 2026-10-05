@@ -24,7 +24,7 @@ La ISO incorpora un ejecutable MIPS PSP real y los recursos convertidos de tu co
 | Start | Menú, ajustes y seis ranuras de guardado |
 | Cuadrado / Triángulo en accesorios | Guardar/cargar accesorios favoritos |
 
-Idioma inicial inglés; español seleccionable en Settings. Ajustes de velocidad de texto, avance automático, volúmenes separados y comportamiento del salto. Se incluyen ambos recorridos iniciales, los capítulos, epílogo y ocho extras, además de una galería disponible al terminar.
+Idioma inicial inglés; español seleccionable en Settings. Ajustes de velocidad de texto, avance automático, volúmenes separados, silenciar todo y comportamiento del salto. Los ajustes usan barras de flores y controles originales, agrupados para la pantalla de PSP. Se incluyen ambos recorridos iniciales, los capítulos, epílogo y ocho extras, además de una galería disponible al terminar.
 
 ## Compilar en Windows
 
@@ -38,7 +38,7 @@ python -m pip install Pillow imageio-ffmpeg pycdlib
 ./tools/build_psp.ps1 -Python python
 ```
 
-`prepare_psp.py` conserva la resolución original del arte en mosaicos RGBA comprimidos sin pérdida, genera atlas de la fuente Nunito a cuatro veces su tamaño y convierte el audio a PCM estéreo de 44,1 kHz. `package_psp.py` genera la ISO y comprueba que `PSP_GAME/SYSDIR/EBOOT.BIN` contenga el ejecutable ELF nativo. Los archivos generados y los recursos del juego están excluidos de Git.
+`prepare_psp.py` conserva la resolución original del arte en mosaicos RGBA comprimidos sin pérdida, genera atlas de la fuente Nunito a cuatro veces su tamaño y empaqueta los símbolos originales extraídos por `prepare_inline.py` de Twemoji/DejaVu y convierte el audio a PCM estéreo de 44,1 kHz. `package_psp.py` genera la ISO y comprueba que `PSP_GAME/SYSDIR/EBOOT.BIN` contenga el ejecutable ELF nativo. Los archivos generados y los recursos del juego están excluidos de Git.
 
 ## Memoria y SDK
 
@@ -53,3 +53,5 @@ Se reutiliza el motor narrativo de Windows al compilar, adaptando sus coleccione
 Se prueba con el perfil PSP-1000 de 32 MiB de PPSSPP. La verificación en emulador no sustituye las pruebas en una PSP física. El renderizado utiliza la GPU de PSP, filtrado bilineal y mipmaps, transparencias y una caché de escenas en VRAM. PPSSPP puede renderizar el arte y las fuentes a su resolución interna configurada. Se conservan los archivos de arte originales, audio estéreo, inglés/español y retroceso limitado a 32 diálogos; las animaciones de escena y la presentación de créditos son simplificadas. No tiene todavía todas las opciones visuales y de idiomas de Windows.
 
 Historia, arte y música originales: **NomnomNami**. Tema final “Pretty in Pink”: **Marlene Bellissimo**. Se conserva la autoría y licencia de los recursos originales.
+
+Los corazones azul, rojo y marrón se verifican en sus diálogos originales. Los gráficos Twemoji son de Twitter y colaboradores (CC-BY 4.0); los archivos originales de atribución se conservan junto a los recursos preparados.

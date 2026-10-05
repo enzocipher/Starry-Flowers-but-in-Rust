@@ -1,6 +1,6 @@
 {
   "accessory_screens": 8,
-  "audio_blocks": 4135,
+  "audio_blocks": 4441,
   "decisions": 2,
   "dialogues": 4781,
   "endings": 2,
@@ -15,15 +15,17 @@
   "heap_mib": 16,
   "renderer": "PSP GU GPU sprites, bilinear/trilinear filtering, VRAM scene caches",
   "texture_source": "Original-resolution RGBA; lossless zlib tiles",
-  "lossless_tiles_verified": 1232,
+  "lossless_tiles_verified": 1238,
   "font_raster_scale": 4,
   "audio_format": "stereo 44100 Hz s16le",
   "native_resolution": "480x272",
   "visual_checks": [
     "title",
     "Pastille",
-    "blue heart",
+    "original blue/red/brown hearts",
     "accessories",
-    "settings"
-  ]
+    "settings English/Spanish"
+  ],
+  "inline_symbols": 3,
+  "original_inline_graphics": 6
 }

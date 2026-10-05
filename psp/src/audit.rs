@@ -9,6 +9,7 @@ use alloc::{format, vec};
 
 pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     let mut lines = 0usize;
+    let mut symbols_seen = vec![];
     let mut decisions = 0usize;
     let mut outfits = 0usize;
     let mut finishes = 0usize;
@@ -20,6 +21,18 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
             match state.run(story) {
                 Stop::Say => {
                     lines += 1;
+                    for (symbol, name) in [
+                        ('\u{1f499}', "BLUE"),
+                        ('\u{2764}', "RED"),
+                        ('\u{1f90e}', "BROWN"),
+                    ] {
+                        if state.text.contains(symbol) && !symbols_seen.contains(&symbol) {
+                            renderer.scene(&state, story);
+                            renderer.dialogue(&state, story, "", usize::MAX);
+                            screenshot(renderer, &format!("PSP-HEART-{name}"));
+                            symbols_seen.push(symbol);
+                        }
+                    }
                     if !sample && state.who == "p" {
                         renderer.scene(&state, story);
                         renderer.dialogue(&state, story, "", usize::MAX);
@@ -28,11 +41,6 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
                         let restored: State = load("AUDIT-SLOT").expect("Save reload failed");
                         assert_eq!(restored.pc, state.pc);
                         assert_eq!(restored.text, state.text);
-                        let mut heart = state.clone();
-                        heart.text = format!("{} \u{1f499}", heart.text);
-                        renderer.scene(&heart, story);
-                        renderer.dialogue(&heart, story, "", usize::MAX);
-                        screenshot(renderer, "PSP-HEART");
                         sample = true;
                     }
                     if lines % 200 == 0 {
@@ -63,6 +71,7 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
         }
     }
     assert_eq!(finishes, 2);
+    assert_eq!(symbols_seen.len(), 3);
     let mut extras = 0usize;
     for extra in crate::EXTRAS {
         let mut state = State::default();
@@ -90,27 +99,20 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     };
     assert!(save("AUDIT-PREFS", &prefs));
     prefs.lang = "es".into();
+    prefs.mute = true;
     assert!(save("AUDIT-PREFS", &prefs));
     let restored: Prefs = load("AUDIT-PREFS").unwrap();
     assert_eq!(restored.lang, "es");
+    assert!(restored.mute);
     assert_eq!(restored.read, prefs.read);
-    crate::menu(
-        renderer,
-        "Settings",
-        &vec![
-            "Language: English".into(),
-            "Text speed: 40".into(),
-            "Auto time: 3".into(),
-            "Music volume: 100%".into(),
-            "Sound volume: 100%".into(),
-            "Skip unseen text: false".into(),
-            "Skip after choices: false".into(),
-            "Skip transitions: false".into(),
-            "Return".into(),
-        ],
-        0,
-    );
+    crate::settings_scene(renderer, story, &Prefs::default(), 0);
     screenshot(renderer, "PSP-SETTINGS");
+    let mut preview = Prefs::default();
+    preview.lang = "es".into();
+    preview.cps = 0.;
+    preview.mute = true;
+    crate::settings_scene(renderer, story, &preview, 8);
+    screenshot(renderer, "PSP-SETTINGS-ES");
     renderer.frame.fill(0xffffffff);
     renderer.text("PSP audit passed", 25, 25, 18, INK);
     renderer.text(
@@ -122,5 +124,5 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     );
     renderer.present(0);
     screenshot(renderer, "PSP-AUDIT-PASSED");
-    serde_json::json!({"passed":true,"dialogues":lines,"endings":finishes,"extras":extras,"decisions":decisions,"accessory_screens":outfits,"save_reload":true,"settings_overwrite":true})
+    serde_json::json!({"passed":true,"dialogues":lines,"endings":finishes,"extras":extras,"decisions":decisions,"accessory_screens":outfits,"save_reload":true,"settings_overwrite":true,"inline_symbols":symbols_seen.len()})
 }

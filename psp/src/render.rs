@@ -46,6 +46,7 @@ pub struct Glyph {
 #[derive(Deserialize)]
 pub struct Font {
     pub scale: f32,
+    pub ascent: f32,
     pub glyphs: HashMap<char, Glyph>,
 }
 #[derive(Deserialize)]
@@ -53,6 +54,7 @@ pub struct Manifest {
     pub images: HashMap<String, ImageInfo>,
     pub fonts: HashMap<String, Font>,
     pub audio: HashMap<String, String>,
+    pub inline_symbols: HashMap<char, crate::engine::InlineSymbol>,
 }
 pub struct Renderer {
     pub frame: crate::gpu::Frame,
@@ -88,8 +90,23 @@ impl Renderer {
             return;
         };
         let (w, h) = size.unwrap_or((info.width, info.height));
-        let sx = w as f32 / info.original_width as f32;
-        let sy = h as f32 / info.original_height as f32;
+        self.image_at(name, x as f32, y as f32, (w as f32, h as f32), alpha, flip);
+    }
+    pub fn image_at(
+        &mut self,
+        name: &str,
+        x: f32,
+        y: f32,
+        size: (f32, f32),
+        alpha: u32,
+        flip: bool,
+    ) {
+        let Some(info) = self.manifest.images.get(name) else {
+            return;
+        };
+        let (w, h) = size;
+        let sx = w / info.original_width as f32;
+        let sy = h / info.original_height as f32;
         for t in &info.tiles {
             let left = if flip {
                 info.original_width - t.x - t.width
@@ -102,10 +119,10 @@ impl Renderer {
                 th: t.texture_height,
                 font: false,
                 xy: [
-                    x as f32 + left as f32 * sx,
-                    y as f32 + t.y as f32 * sy,
-                    x as f32 + (left + t.width) as f32 * sx,
-                    y as f32 + (t.y + t.height) as f32 * sy,
+                    x + left as f32 * sx,
+                    y + t.y as f32 * sy,
+                    x + (left + t.width) as f32 * sx,
+                    y + (t.y + t.height) as f32 * sy,
                 ],
                 uv: if flip {
                     [32. + t.width as f32, 32., 32., 32. + t.height as f32]
@@ -142,18 +159,48 @@ impl Renderer {
         let font = &self.manifest.fonts[&size.to_string()];
         text.chars()
             .map(|c| {
-                font.glyphs
+                self.manifest
+                    .inline_symbols
                     .get(&c)
-                    .map(|g| g.advance)
-                    .unwrap_or(size as f32 * 0.5)
+                    .map(|symbol| symbol.advance * size as f32)
+                    .unwrap_or_else(|| {
+                        font.glyphs
+                            .get(&c)
+                            .map(|g| g.advance)
+                            .unwrap_or(size as f32 * 0.5)
+                    })
             })
             .sum()
     }
     pub fn text(&mut self, text: &str, x: i32, y: i32, size: usize, color: u32) {
-        let font = &self.manifest.fonts[&size.to_string()];
+        let scale = self.manifest.fonts[&size.to_string()].scale;
+        let ascent = self.manifest.fonts[&size.to_string()].ascent;
         let mut cursor = x as f32;
         for c in text.chars() {
-            let Some(g) = font.glyphs.get(&c) else {
+            if c == '\u{fe0f}' {
+                continue;
+            }
+            if let Some(symbol) = self.manifest.inline_symbols.get(&c).cloned() {
+                let start = self.frame.draws.len();
+                let old = (self.frame.prefix_len, self.frame.prefix_sealed);
+                self.image_at(
+                    &symbol.image,
+                    cursor,
+                    y as f32 + ascent + symbol.baseline_top * size as f32,
+                    (symbol.width * size as f32, symbol.height * size as f32),
+                    color >> 24,
+                    false,
+                );
+                (self.frame.prefix_len, self.frame.prefix_sealed) = old;
+                if symbol.tint {
+                    for d in &mut self.frame.draws[start..] {
+                        d.color = color;
+                    }
+                }
+                cursor += symbol.advance * size as f32;
+                continue;
+            }
+            let Some(g) = self.manifest.fonts[&size.to_string()].glyphs.get(&c) else {
                 cursor += size as f32 * 0.5;
                 continue;
             };
@@ -167,8 +214,8 @@ impl Renderer {
                 xy: [
                     left,
                     top,
-                    left + g.width as f32 / font.scale,
-                    top + g.height as f32 / font.scale,
+                    left + g.width as f32 / scale,
+                    top + g.height as f32 / scale,
                 ],
                 uv: [
                     g.x as f32,
@@ -176,10 +223,31 @@ impl Renderer {
                     (g.x + g.width) as f32,
                     (g.y + g.height) as f32,
                 ],
-                color: if c == '\u{1f499}' { BLUE } else { color },
+                color,
             });
             cursor += g.advance;
         }
+    }
+    pub fn image_progress(&mut self, name: &str, x: f32, y: f32, w: f32, h: f32, fraction: f32) {
+        let start = self.frame.draws.len();
+        let old = (self.frame.prefix_len, self.frame.prefix_sealed);
+        self.image_at(name, x, y, (w, h), 255, false);
+        (self.frame.prefix_len, self.frame.prefix_sealed) = old;
+        let right = x + w * fraction.clamp(0., 1.);
+        for d in &mut self.frame.draws[start..] {
+            let original = d.xy[2];
+            let clipped = original.min(right).max(d.xy[0]);
+            let ratio = (clipped - d.xy[0]) / (original - d.xy[0]);
+            d.xy[2] = clipped;
+            d.uv[2] = d.uv[0] + (d.uv[2] - d.uv[0]) * ratio;
+        }
+    }
+    pub fn label(&mut self, text: &str, x: i32, y: i32, width: f32, size: usize, color: u32) {
+        let size = [size, 10, 8]
+            .into_iter()
+            .find(|s| self.width(text, *s) <= width)
+            .unwrap_or(8);
+        self.text(text, x, y, size, color);
     }
     pub fn name(&mut self, who: &str, text: &str, x: i32, y: i32) {
         let (outer, inner) = match who {
