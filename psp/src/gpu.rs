@@ -77,6 +77,8 @@ pub struct Gpu {
     old_valid: bool,
     pub texture_loads: usize,
     pub scene_renders: usize,
+    pub load_ms: f64,
+    pub inflate_ms: f64,
 }
 #[repr(C)]
 struct Vertex {
@@ -109,6 +111,8 @@ impl Gpu {
             old_valid: false,
             texture_loads: 0,
             scene_renders: 0,
+            load_ms: 0.,
+            inflate_ms: 0.,
         };
         unsafe {
             sceGuInit();
@@ -309,134 +313,149 @@ impl Gpu {
             self.start(buffer);
             sceGuClearColor(frame.clear);
             sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+            let mut bound = String::new();
             for d in &frame.draws {
                 if self.queued > 400 {
                     self.finish();
                     self.start(buffer);
+                    bound.clear();
                 }
-                if d.file.starts_with("@") {
-                    sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgb);
-                    sceGuEnable(GuState::Texture2D);
-                    sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 0);
-                    sceGuTexImage(
-                        MipmapLevel::None,
-                        512,
-                        d.th as i32,
-                        512,
-                        if d.file == "@prefix" {
-                            self.prefix_pixels.as_ptr().cast()
-                        } else if d.file == "@old" {
-                            self.old_pixels.as_ptr().cast()
-                        } else {
-                            self.scene_pixels.as_ptr().cast()
-                        },
-                    );
-                    sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
-                    sceGuTexFlush();
-                } else if !d.file.is_empty() {
-                    sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
-                    if !self.cache.contains_key(&d.file) {
-                        self.finish();
-                        let required = if d.font {
-                            d.tw * d.th
-                        } else {
-                            d.tw * d.th * 4 * 21 / 16
-                        };
-                        while self
-                            .cache
-                            .values()
-                            .map(|c| c.data.len() * 16)
-                            .sum::<usize>()
-                            + required
-                            > 3 * 1024 * 1024
-                        {
-                            let key = self
-                                .cache
-                                .iter()
-                                .filter(|(k, _)| {
-                                    !matches!(
-                                        k.as_str(),
-                                        "F08P00.RAW" | "F10P00.RAW" | "F12P00.RAW" | "F18P00.RAW"
-                                    )
-                                })
-                                .min_by_key(|(_, v)| v.used)
-                                .map(|(k, _)| k.clone())
-                                .unwrap();
-                            self.cache.remove(&key);
-                        }
-                        self.texture_loads += 1;
-                        if let Ok(bytes) = crate::io::read(alloc::format!("{root}/DATA/{}", d.file))
-                        {
-                            let bytes = if d.file.ends_with(".ZTX") {
-                                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                                    &bytes,
-                                    512 * 512 * 4 * 21 / 16,
-                                )
-                                .expect("Invalid texture")
-                            } else {
-                                bytes
-                            };
-                            let mut data = vec![Block([0; 16]); (bytes.len() + 15) / 16];
-                            ptr::copy_nonoverlapping(
-                                bytes.as_ptr(),
-                                data.as_mut_ptr().cast(),
-                                bytes.len(),
-                            );
-                            sceKernelDcacheWritebackAll();
-                            self.cache.insert(
-                                d.file.clone(),
-                                Cached {
-                                    data,
-                                    used: self.clock,
-                                },
-                            );
-                        }
-                        self.start(buffer);
-                    }
-                    let Some(c) = self.cache.get_mut(&d.file) else {
-                        continue;
-                    };
-                    self.clock += 1;
-                    c.used = self.clock;
-                    let data = c.data.as_ptr().cast::<u8>();
-                    sceGuEnable(GuState::Texture2D);
-                    if d.font {
-                        sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 0);
-                        sceGuClutMode(ClutPixelFormat::Psm8888, 0, 255, 0);
-                        sceGuClutLoad(32, self.palette.as_ptr().cast());
+                if d.file != bound || d.file.is_empty() {
+                    if d.file.starts_with("@") {
+                        sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgb);
+                        sceGuEnable(GuState::Texture2D);
+                        sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 0);
                         sceGuTexImage(
                             MipmapLevel::None,
-                            d.tw as i32,
+                            512,
                             d.th as i32,
-                            d.tw as i32,
-                            data.cast(),
+                            512,
+                            if d.file == "@prefix" {
+                                self.prefix_pixels.as_ptr().cast()
+                            } else if d.file == "@old" {
+                                self.old_pixels.as_ptr().cast()
+                            } else {
+                                self.scene_pixels.as_ptr().cast()
+                            },
                         );
                         sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
-                    } else {
-                        sceGuTexMode(TexturePixelFormat::Psm8888, 2, 0, 0);
-                        let mut offset = 0;
-                        for (l, level) in
-                            [MipmapLevel::None, MipmapLevel::Level1, MipmapLevel::Level2]
-                                .into_iter()
-                                .enumerate()
-                        {
-                            let w = d.tw >> l;
-                            let h = d.th >> l;
-                            sceGuTexImage(
-                                level,
-                                w as i32,
-                                h as i32,
-                                w as i32,
-                                data.add(offset).cast(),
-                            );
-                            offset += w * h * 4;
+                        sceGuTexFlush();
+                    } else if !d.file.is_empty() {
+                        sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
+                        if !self.cache.contains_key(&d.file) {
+                            self.finish();
+                            let required = if d.font {
+                                d.tw * d.th
+                            } else {
+                                d.tw * d.th * 4 * 21 / 16
+                            };
+                            while self
+                                .cache
+                                .values()
+                                .map(|c| c.data.len() * 16)
+                                .sum::<usize>()
+                                + required
+                                > 4 * 1024 * 1024
+                            {
+                                let key = self
+                                    .cache
+                                    .iter()
+                                    .filter(|(k, _)| {
+                                        !matches!(
+                                            k.as_str(),
+                                            "F08P00.RAW"
+                                                | "F10P00.RAW"
+                                                | "F12P00.RAW"
+                                                | "F18P00.RAW"
+                                        )
+                                    })
+                                    .min_by_key(|(_, v)| v.used)
+                                    .map(|(k, _)| k.clone())
+                                    .unwrap();
+                                self.cache.remove(&key);
+                            }
+                            self.texture_loads += 1;
+                            let load_started = crate::now();
+                            if let Ok(mut file) =
+                                crate::io::File::open(&alloc::format!("{root}/DATA/{}", d.file))
+                            {
+                                // Read directly into aligned texture memory: no inflate or second full copy.
+                                let mut data = vec![Block([0; 16]); (required + 15) / 16];
+                                let bytes = core::slice::from_raw_parts_mut(
+                                    data.as_mut_ptr().cast::<u8>(),
+                                    required,
+                                );
+                                let mut done = 0;
+                                while done < required {
+                                    let n =
+                                        file.read(&mut bytes[done..]).expect("Texture read failed");
+                                    assert!(n > 0, "Truncated texture");
+                                    done += n;
+                                }
+                                self.load_ms += (crate::now() - load_started) * 1000.;
+                                sceKernelDcacheWritebackAll();
+                                self.cache.insert(
+                                    d.file.clone(),
+                                    Cached {
+                                        data,
+                                        used: self.clock,
+                                    },
+                                );
+                            }
+                            self.start(buffer);
                         }
-                        sceGuTexLevelMode(TextureLevelMode::Auto, 0.);
-                        sceGuTexFilter(TextureFilter::LinearMipmapLinear, TextureFilter::Linear);
+                        let Some(c) = self.cache.get_mut(&d.file) else {
+                            continue;
+                        };
+                        self.clock += 1;
+                        c.used = self.clock;
+                        let data = c.data.as_ptr().cast::<u8>();
+                        sceGuEnable(GuState::Texture2D);
+                        if d.font {
+                            sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 0);
+                            sceGuClutMode(ClutPixelFormat::Psm8888, 0, 255, 0);
+                            sceGuClutLoad(32, self.palette.as_ptr().cast());
+                            sceGuTexImage(
+                                MipmapLevel::None,
+                                d.tw as i32,
+                                d.th as i32,
+                                d.tw as i32,
+                                data.cast(),
+                            );
+                            sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear);
+                        } else {
+                            sceGuTexMode(TexturePixelFormat::Psm8888, 2, 0, 0);
+                            let mut offset = 0;
+                            for (l, level) in
+                                [MipmapLevel::None, MipmapLevel::Level1, MipmapLevel::Level2]
+                                    .into_iter()
+                                    .enumerate()
+                            {
+                                let w = d.tw >> l;
+                                let h = d.th >> l;
+                                sceGuTexImage(
+                                    level,
+                                    w as i32,
+                                    h as i32,
+                                    w as i32,
+                                    data.add(offset).cast(),
+                                );
+                                offset += w * h * 4;
+                            }
+                            sceGuTexLevelMode(TextureLevelMode::Auto, 0.);
+                            sceGuTexFilter(
+                                TextureFilter::LinearMipmapLinear,
+                                TextureFilter::Linear,
+                            );
+                        }
+                        sceGuTexFlush();
+                    } else {
+                        sceGuDisable(GuState::Texture2D);
                     }
-                    sceGuTexFlush();
-                } else {
-                    sceGuDisable(GuState::Texture2D);
+                    bound.clone_from(&d.file);
+                } else if let Some(c) = self.cache.get_mut(&d.file) {
+                    self.clock += 1;
+                    c.used = self.clock;
                 }
                 let vertices =
                     sceGuGetMemory((core::mem::size_of::<Vertex>() * 2) as i32) as *mut Vertex;

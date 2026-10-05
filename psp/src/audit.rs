@@ -117,6 +117,7 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
         crate::about_scene(renderer, story, "", index);
         screenshot(renderer, &format!("PSP-ABOUT-{}", index));
     }
+    let skip_perf = skip_playback(renderer, story);
     let perf = performance(renderer, story);
     renderer.frame.fill(0xffffffff);
     renderer.text("PSP audit passed", 25, 25, 18, INK);
@@ -129,7 +130,7 @@ pub fn run(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
     );
     renderer.present(0);
     screenshot(renderer, "PSP-AUDIT-PASSED");
-    serde_json::json!({"passed":true,"dialogues":lines,"endings":finishes,"extras":extras,"decisions":decisions,"accessory_screens":outfits,"save_reload":true,"settings_overwrite":true,"inline_symbols":symbols_seen.len(),"performance":perf})
+    serde_json::json!({"passed":true,"dialogues":lines,"endings":finishes,"extras":extras,"decisions":decisions,"accessory_screens":outfits,"save_reload":true,"settings_overwrite":true,"inline_symbols":symbols_seen.len(),"performance":perf,"skip_playback":skip_perf})
 }
 
 pub fn performance(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
@@ -233,4 +234,81 @@ pub fn performance(renderer: &mut Renderer, story: &Story) -> serde_json::Value 
     );
     screenshot(renderer, "PSP-STARTUP-FINAL");
     serde_json::json!({"settings_cache_different_pixels":differences,"settings_cache_mean_rgb_error":mean_error,"settings_cache_severe_pixels":severe,"startup_fade_texture_loads":startup_after.0-startup_before.0,"startup_fade_scene_renders":startup_after.1-startup_before.1,"settings_navigation_ms_per_frame":navigation_ms,"settings_navigation_texture_loads":after.0-before.0,"settings_navigation_scene_renders":after.1-before.1})
+}
+
+pub fn skip_playback(renderer: &mut Renderer, story: &Story) -> serde_json::Value {
+    let mut gate = crate::playback::SkipGate::default();
+    let mut latched = false;
+    assert!(gate.update(&mut latched, true, false, false, true));
+    assert!(!gate.update(&mut latched, true, false, true, true));
+    assert!(!gate.update(&mut latched, true, false, false, true));
+    gate.update(&mut latched, false, false, false, true);
+    assert!(!gate.update(&mut latched, true, false, false, false));
+    assert!(!gate.update(&mut latched, true, false, false, true));
+    gate.update(&mut latched, false, false, false, true);
+    let mut state = State::default();
+    state.start(story, "start");
+    let mut stop = state.run(story);
+    let mut dialogues = 0usize;
+    let mut frames = 0usize;
+    let mut next_scene = true;
+    let began = crate::now();
+    let before = renderer.stats();
+    let load_before = renderer.load_stats();
+    let mut durations = vec![];
+    while dialogues < 120 && frames < 1800 {
+        let frame_started = crate::now();
+        if next_scene {
+            renderer.scene(&state, story);
+            next_scene = false;
+        }
+        let base = renderer.frame.clone();
+        if stop == Stop::Say {
+            renderer.dialogue(&state, story, "", usize::MAX);
+        }
+        renderer.present(1);
+        renderer.frame = base;
+        let active = gate.update(&mut latched, true, false, false, true);
+        if gate.advance_due(active, crate::now()) {
+            match stop {
+                Stop::Menu => {
+                    state.pc = story.ops[state.pc - 1].choices[0].target;
+                }
+                Stop::Dress => {
+                    state.acc = [0; 3];
+                }
+                Stop::Say => {
+                    dialogues += 1;
+                }
+                Stop::End => break,
+                _ => {}
+            }
+            stop = state.run(story);
+            next_scene = true;
+        }
+        durations.push((crate::now() - frame_started) * 1000.);
+        frames += 1;
+    }
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let after = renderer.stats();
+    let load_after = renderer.load_stats();
+    assert!(
+        (crate::now() - began) * 1000. / (frames as f64) < 40.,
+        "Skip stalls rendering"
+    );
+    assert!(
+        durations[durations.len() * 95 / 100] < 60.,
+        "Skip has sustained slow frames"
+    );
+    assert_eq!(dialogues, 120);
+    assert!(!gate.update(&mut latched, true, false, true, true));
+    let pc = state.pc;
+    for _ in 0..10 {
+        assert!(!gate.update(&mut latched, true, false, false, true));
+    }
+    assert_eq!(pc, state.pc);
+    renderer.scene(&state, story);
+    renderer.dialogue(&state, story, "", usize::MAX);
+    screenshot(renderer, "PSP-AFTER-SKIP");
+    serde_json::json!({"dialogues":dialogues,"frames":frames,"elapsed_seconds":crate::now()-began,"mean_frame_ms":(crate::now()-began)*1000./frames as f64,"cancel_immediate":true,"unread_requires_release":true,"texture_loads":after.0-before.0,"scene_renders":after.1-before.1,"prefix_renders":load_after.2-load_before.2,"load_ms":load_after.0-load_before.0,"inflate_ms":load_after.1-load_before.1,"frame_p95_ms":durations[durations.len()*95/100],"frame_max_ms":durations[durations.len()-1]})
 }

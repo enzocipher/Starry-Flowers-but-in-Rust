@@ -7,7 +7,6 @@ build = "build.rs"
 psp = "0.3.14"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 [profile.release]
 lto = true
 opt-level = "s"

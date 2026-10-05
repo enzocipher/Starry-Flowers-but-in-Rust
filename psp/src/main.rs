@@ -20,6 +20,7 @@ mod layout {
 mod audio;
 mod audit;
 mod io;
+mod playback;
 use audio::Audio;
 mod gpu;
 mod render;
@@ -348,7 +349,7 @@ fn dress_scene(r: &mut Renderer, state: &State, story: &Story) {
 }
 fn psp_main() {
     unsafe {
-        psp::init_heap(16 * 1024 * 1024);
+        psp::init_heap(18 * 1024 * 1024);
     }
     psp::enable_home_button();
     unsafe {
@@ -381,6 +382,11 @@ fn psp_main() {
     let mut pc = usize::MAX;
     let mut started = now();
     let mut pause_until = 0.;
+    let mut skip_gate = playback::SkipGate::default();
+    let mut prefs_dirty = false;
+    let mut prefs_saved_at = now();
+    let mut seen_effect_id = state.effect_id;
+    let mut effect_started = now();
     let mut all = false;
     let mut base = gpu::Frame::new();
     let mut old = base.clone();
@@ -412,6 +418,10 @@ fn psp_main() {
                 pause_until = time + s;
             }
         }
+        if state.effect_id != seen_effect_id {
+            seen_effect_id = state.effect_id;
+            effect_started = time;
+        }
         if audit && frames == 30 {
             screenshot(&mut r, "PSP-TITLE");
             state.start(&story, "start");
@@ -419,7 +429,9 @@ fn psp_main() {
             page = Page::Game;
         }
         if audit && frames == 90 && io::exists(&format!("{root}/DATA/PERF")) {
-            let result = audit::performance(&mut r, &story);
+            let navigation = audit::performance(&mut r, &story);
+            let skip = audit::skip_playback(&mut r, &story);
+            let result = serde_json::json!({"navigation": navigation, "skip_playback": skip});
             save("PERF", &result);
             unsafe {
                 sys::sceKernelExitGame();
@@ -547,14 +559,53 @@ fn psp_main() {
                 }
             }
             Page::Game => {
+                if pressed.contains(B::SQUARE) {
+                    auto = !auto;
+                    skipping = false;
+                }
+                if pressed.contains(B::SELECT) {
+                    auto = false;
+                }
+                if pressed.contains(B::TRIANGLE) {
+                    hidden = !hidden;
+                }
+                if pressed.contains(B::START) {
+                    page = Page::Menu;
+                    return_page = Page::Game;
+                    selected = 0;
+                    auto = false;
+                    skipping = false;
+                }
+                if circle || pressed.contains(B::LTRIGGER) {
+                    if let Some(prev) = history.pop_back() {
+                        state = prev;
+                        stop = Stop::Say;
+                        pc = state.pc;
+                        started = time;
+                        all = true;
+                        r.scene(&state, &story);
+                        base.clone_from(&r.frame);
+                        seen_effect_id = state.effect_id;
+                        effect_started = time - 1.;
+                        auto = false;
+                        skipping = false;
+                    }
+                }
+
                 let text = clean_text(&story.translate(&state.text, &p.lang));
                 let total = text.chars().count();
                 let eligible = p.unseen || p.read.contains(&state.pc);
-                if skipping && stop == Stop::Say && !eligible {
-                    skipping = false;
-                }
-                let skip = (skipping || pad.buttons.contains(B::RTRIGGER))
-                    && (eligible || matches!(stop, Stop::Pause(_)));
+                let interrupt = (cross && matches!(stop, Stop::Say | Stop::Pause(_)))
+                    || circle
+                    || pressed.intersects(B::LTRIGGER | B::START | B::SQUARE);
+                let skip = skip_gate.update(
+                    &mut skipping,
+                    pad.buttons.contains(B::RTRIGGER),
+                    pressed.contains(B::SELECT),
+                    interrupt,
+                    stop != Stop::Say || eligible,
+                ) && matches!(stop, Stop::Say | Stop::Pause(_));
+                let skip_advance = skip_gate.advance_due(skip, time);
                 let shown = if all || skip || p.cps <= 0. || audit {
                     total
                 } else {
@@ -563,17 +614,20 @@ fn psp_main() {
                 let complete = shown >= total;
                 if stop == Stop::Say && complete && !p.read.contains(&state.pc) {
                     p.read.push(state.pc);
-                    if !audit {
-                        save("PREFS", &p);
-                    }
+                    prefs_dirty = true;
                 }
                 r.frame.clone_from(&base);
                 let age = time - started;
-                if !p.transitions && age < 0.18 {
+                if !skip && !p.transitions && age < 0.18 {
                     r.frame.fade_from(&old, (age / 0.18 * 255.) as u32);
                 }
-                if ["vpunch", "hpunch"].contains(&state.effect.as_str()) && age < 0.275 {
-                    let phase = (age % 0.1) / 0.1;
+                let effect_age = time - effect_started;
+                if !skip
+                    && !p.transitions
+                    && ["vpunch", "hpunch"].contains(&state.effect.as_str())
+                    && effect_age < 0.275
+                {
+                    let phase = (effect_age % 0.1) / 0.1;
                     let offset = if phase < 0.25 {
                         phase * 4.
                     } else if phase < 0.75 {
@@ -591,33 +645,6 @@ fn psp_main() {
                 if stop == Stop::Say && !hidden {
                     r.dialogue(&state, &story, &p.lang, shown);
                 }
-                if pressed.contains(B::SQUARE) {
-                    auto = !auto;
-                    skipping = false;
-                }
-                if pressed.contains(B::SELECT) {
-                    skipping = !skipping;
-                    auto = false;
-                }
-                if pressed.contains(B::TRIANGLE) {
-                    hidden = !hidden;
-                }
-                if pressed.contains(B::START) {
-                    page = Page::Menu;
-                    return_page = Page::Game;
-                    selected = 0;
-                    auto = false;
-                    skipping = false;
-                }
-                if circle || pressed.contains(B::LTRIGGER) {
-                    if let Some(prev) = history.pop_back() {
-                        state = prev;
-                        stop = Stop::Say;
-                        pc = usize::MAX;
-                        auto = false;
-                        skipping = false;
-                    }
-                }
                 if matches!(stop, Stop::Say | Stop::Pause(_)) {
                     if cross {
                         auto = false;
@@ -630,7 +657,7 @@ fn psp_main() {
                             advance = true;
                         }
                     }
-                    if skip
+                    if skip_advance
                         || auto && complete && age > p.delay.max(0.) * (25. + total as f64) / 250.
                     {
                         advance = true;
@@ -677,7 +704,13 @@ fn psp_main() {
                         state.pc = op.choices[selected].target;
                         if !p.after_choices {
                             auto = false;
-                            skipping = false;
+                            let _ = skip_gate.update(
+                                &mut skipping,
+                                pad.buttons.contains(B::RTRIGGER),
+                                false,
+                                true,
+                                true,
+                            );
                         }
                         advance = true;
                     }
@@ -967,7 +1000,7 @@ fn psp_main() {
             if stop == Stop::Say {
                 if !p.read.contains(&state.pc) {
                     p.read.push(state.pc);
-                    save("PREFS", &p);
+                    prefs_dirty = true;
                 }
                 history.push_back(state.clone());
                 if history.len() > 32 {
@@ -1015,6 +1048,12 @@ fn psp_main() {
         state.sound.clear();
         if page != Page::Save && page != Page::Load {
             slots_page = None;
+        }
+        if prefs_dirty && (page != Page::Game || time - prefs_saved_at >= 2.) {
+            if save("PREFS", &p) {
+                prefs_dirty = false;
+                prefs_saved_at = time;
+            }
         }
         r.present(buffer);
         buffer = 1 - buffer;

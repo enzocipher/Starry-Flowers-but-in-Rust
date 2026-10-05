@@ -30,6 +30,10 @@ pub struct ImageInfo {
     pub height: usize,
     pub original_width: usize,
     pub original_height: usize,
+    #[serde(default)]
+    pub raster_width: usize,
+    #[serde(default)]
+    pub raster_height: usize,
     pub tiles: Vec<Tile>,
 }
 #[derive(Deserialize)]
@@ -105,14 +109,20 @@ impl Renderer {
             return;
         };
         let (w, h) = size;
-        let sx = w / info.original_width as f32;
-        let sy = h / info.original_height as f32;
+        let rw = if info.raster_width > 0 {
+            info.raster_width
+        } else {
+            info.original_width
+        };
+        let rh = if info.raster_height > 0 {
+            info.raster_height
+        } else {
+            info.original_height
+        };
+        let sx = w / rw as f32;
+        let sy = h / rh as f32;
         for t in &info.tiles {
-            let left = if flip {
-                info.original_width - t.x - t.width
-            } else {
-                t.x
-            };
+            let left = if flip { rw - t.x - t.width } else { t.x };
             self.frame.draws.push(crate::gpu::Draw {
                 file: t.file.clone(),
                 tw: t.texture_width,
@@ -125,9 +135,9 @@ impl Renderer {
                     y + (t.y + t.height) as f32 * sy,
                 ],
                 uv: if flip {
-                    [32. + t.width as f32, 32., 32., 32. + t.height as f32]
+                    [4. + t.width as f32, 4., 4., 4. + t.height as f32]
                 } else {
-                    [32., 32., 32. + t.width as f32, 32. + t.height as f32]
+                    [4., 4., 4. + t.width as f32, 4. + t.height as f32]
                 },
                 color: (alpha << 24) | 0xffffff,
             });
@@ -390,6 +400,8 @@ impl Renderer {
         self.frame.scene_len = self.frame.draws.len();
     }
     pub fn dialogue(&mut self, state: &State, story: &Story, lang: &str, revealed: usize) {
+        // Textbox height and portrait change per line; never include them in the stable prefix.
+        self.frame.prefix_sealed = true;
         if state.nvl_mode {
             self.image("ui nvl", 0, 0, Some((480, 272)), 255, false);
             self.frame.scene_len = self.frame.draws.len();
@@ -470,6 +482,13 @@ impl Renderer {
     }
     pub fn stats(&self) -> (usize, usize) {
         (self.gpu.texture_loads, self.gpu.scene_renders)
+    }
+    pub fn load_stats(&self) -> (f64, f64, usize) {
+        (
+            self.gpu.load_ms,
+            self.gpu.inflate_ms,
+            self.gpu.prefix_renders,
+        )
     }
     pub fn present(&mut self, buffer: usize) {
         let _ = buffer;

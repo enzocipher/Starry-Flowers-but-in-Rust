@@ -1,5 +1,5 @@
-"""Preserve original art in lossless GPU tiles, with mipmaps and 4x font atlases."""
-import hashlib, json, math, pathlib, subprocess, zlib, shutil
+"""Prepare cropped art at PSP resolution, retaining original logical geometry."""
+import hashlib, json, math, pathlib, subprocess, shutil
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 ROOT=pathlib.Path(__file__).resolve().parents[1]
@@ -8,7 +8,7 @@ story=json.loads((ROOT/'story.json').read_text(encoding='utf-8'))
 story['translations']={k:v for k,v in story['translations'].items() if k=='es'}
 (ROOT/'psp/story.json').write_text(json.dumps(story,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
 images=dict(story['images']); images.update({'ui '+n:'gui/'+n+'.png' for n in ['main_menu','game_menu','textbox','nvl']})
-manifest={'images':{},'fonts':{},'audio':{},'version':3,'inline_symbols':story.get('inline_symbols',{})}
+manifest={'images':{},'fonts':{},'audio':{},'version':6,'art_scale':0.375,'inline_symbols':story.get('inline_symbols',{})}
 files={}; active={'MANIFEST.JSON'}
 for source,target in [('Twemoji-LICENSE.txt','TWEMOJI.TXT'),('DejaVu-LICENSE.txt','DEJAVU.TXT')]:
  shutil.copyfile(ROOT/'assets/gui/emoji'/source,OUT/target);active.add(target)
@@ -17,20 +17,23 @@ def power2(n): return 1<<(n-1).bit_length()
 for name,path in images.items():
  if path not in files:
   original=Image.open(ROOT/'assets'/path).convert('RGBA'); ow,oh=original.size
-  levels=[original]+[original.resize((max(1,(ow+(1<<l)-1)//(1<<l)),max(1,(oh+(1<<l)-1)//(1<<l))),Image.Resampling.LANCZOS) for l in [1,2]]
+  rw,rh=max(4,((round(ow*.375)+3)//4)*4),max(4,((round(oh*.375)+3)//4)*4); original=original.resize((rw,rh),Image.Resampling.LANCZOS)
+  bounds=original.getbbox() or (0,0,1,1)
+  bounds=(bounds[0]//4*4,bounds[1]//4*4,min(rw,(bounds[2]+3)//4*4),min(rh,(bounds[3]+3)//4*4))
+  levels=[original]+[original.resize((max(1,(rw+(1<<l)-1)//(1<<l)),max(1,(rh+(1<<l)-1)//(1<<l))),Image.Resampling.LANCZOS) for l in [1,2]]
   tiles=[]
-  for y in range(0,oh,448):
-   for x in range(0,ow,448):
-    w,h=min(448,ow-x),min(448,oh-y); tw,th=power2(w+64),power2(h+64)
-    filename='T'+hashlib.sha256(path.encode()).hexdigest()[:8].upper()+f'{x//448:02X}{y//448:02X}.ZTX'
+  for y in range(bounds[1],bounds[3],448):
+   for x in range(bounds[0],bounds[2],448):
+    w,h=min(448,bounds[2]-x),min(448,bounds[3]-y); tw,th=power2(w+8),power2(h+8)
+    filename='T'+hashlib.sha256((path+'@psp-native-cropped-v6').encode()).hexdigest()[:8].upper()+f'{x//448:02X}{y//448:02X}.TEX'
     data=bytearray()
     for level,img in enumerate(levels):
      scale=1<<level
-     tile=img.crop(((x-32)//scale,(y-32)//scale,(x-32+tw)//scale,(y-32+th)//scale))
+     tile=img.crop(((x-4)//scale,(y-4)//scale,(x-4+tw)//scale,(y-4+th)//scale))
      data.extend(tile.tobytes())
-    (OUT/filename).write_bytes(zlib.compress(data,6)); active.add(filename)
+    (OUT/filename).write_bytes(data); active.add(filename)
     tiles.append({'file':filename,'x':x,'y':y,'width':w,'height':h,'texture_width':tw,'texture_height':th})
-  files[path]={'width':max(1,round(ow*.375)),'height':max(1,round(oh*.375)),'original_width':ow,'original_height':oh,'tiles':tiles}
+  files[path]={'width':max(1,round(ow*.375)),'height':max(1,round(oh*.375)),'original_width':ow,'original_height':oh,'raster_width':rw,'raster_height':rh,'tiles':tiles}
  manifest['images'][name]=files[path]
 chars=set(''.join(op.get('text','') for op in story['ops']))
 chars.update(''.join(c['heading']+c['body'] for c in story.get('credits',[]))); chars.add('∞'); chars.update(''.join(story['translations'].get('es',{}).values())); chars.update(chr(i) for i in range(32,256))
@@ -57,4 +60,4 @@ for path in sorted((ROOT/'assets/audio').iterdir()):
  manifest['audio'][path.stem]=filename;active.add(filename)
 manifest['files']=sorted(active)
 (OUT/'MANIFEST.JSON').write_text(json.dumps(manifest,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
-print(f"Original-resolution art: {len(files)} images; {sum(len(i['tiles']) for i in files.values())} GPU tiles; {sum((OUT/p).stat().st_size for p in active)/1024**2:.1f} MiB")
+print(f"Native-resolution cropped art: {len(files)} images; {sum(len(i['tiles']) for i in files.values())} GPU tiles; {sum((OUT/p).stat().st_size for p in active)/1024**2:.1f} MiB")
