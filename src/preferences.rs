@@ -1,6 +1,7 @@
 use crate::{mouse, Art, Story, BLUE, INK};
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, sync::OnceLock};
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -17,7 +18,9 @@ pub struct Preferences {
     pub skip_transitions: bool,
     pub text_cps: f32,
     pub afm_time: f32,
-    pub read: Vec<usize>,
+    pub(crate) read: Vec<usize>,
+    #[serde(skip)]
+    read_index: OnceLock<HashSet<usize>>,
     pub clear: bool,
     pub seen: Vec<String>,
     pub fave: [usize; 3],
@@ -38,6 +41,7 @@ impl Default for Preferences {
             text_cps: 60.,
             afm_time: 15.,
             read: vec![],
+            read_index: OnceLock::new(),
             clear: false,
             seen: vec![],
             fave: [0; 3],
@@ -45,6 +49,24 @@ impl Default for Preferences {
     }
 }
 impl Preferences {
+    /// Clamp persisted numeric values and reject unsupported enum-like values.
+    /// This also protects the UI from hand-edited or partially corrupt saves.
+    pub fn normalize(&mut self) {
+        self.volume = finite_clamp(self.volume, 0.8, 0.0, 1.0);
+        self.sound_volume = finite_clamp(self.sound_volume, 1.0, 0.0, 1.0);
+        self.text_cps = finite_clamp(self.text_cps, 60.0, 0.0, 201.0);
+        self.afm_time = finite_clamp(self.afm_time, 15.0, 0.0, 30.0);
+        if !["disable", "left", "right"].contains(&self.rollback_side.as_str()) {
+            self.rollback_side = "disable".into();
+        }
+        self.read.sort_unstable();
+        self.read.dedup();
+        self.read_index = OnceLock::new();
+        let _ = self.read_index.set(self.read.iter().copied().collect());
+        self.seen.sort_unstable();
+        self.seen.dedup();
+    }
+
     pub fn migrate(&mut self, legacy: bool) {
         if legacy {
             self.version = 2;
@@ -56,14 +78,32 @@ impl Preferences {
         self.afm_time.max(0.) as f64 * (25. + len as f64) / 250.
     }
     pub fn mark_read(&mut self, pc: usize) -> bool {
-        if self.read.contains(&pc) {
+        if self
+            .read_index
+            .get_or_init(|| self.read.iter().copied().collect())
+            .contains(&pc)
+        {
             return false;
         }
+        // The set is initialized above and this is the only mutation path for
+        // `read`, so the serialized vector and its in-memory index stay aligned.
         self.read.push(pc);
+        self.read_index.get_mut().unwrap().insert(pc);
         true
     }
     pub fn can_skip(&self, pc: usize) -> bool {
-        self.skip_unseen || self.read.contains(&pc)
+        self.skip_unseen
+            || self
+                .read_index
+                .get_or_init(|| self.read.iter().copied().collect())
+                .contains(&pc)
+    }
+}
+fn finite_clamp(value: f32, fallback: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
     }
 }
 pub fn visible_text(text: &str, elapsed: f64, cps: f32, all: bool) -> String {
@@ -100,7 +140,10 @@ pub fn punch_offset(effect: &str, elapsed: f64) -> Vec2 {
     }
 }
 fn slider(art: &Art, value: &mut f32, min: f32, max: f32, r: Rect) {
-    let fraction = ((*value - min) / (max - min)).clamp(0., 1.);
+    let range = max - min;
+    if !range.is_finite() || range <= 0. || !r.w.is_finite() || r.w <= 0. {
+        return;
+    }
     let hover = r.contains(mouse());
     let area = Rect::new(r.x, r.y, r.w, 42.);
     art.image(
@@ -114,6 +157,12 @@ fn slider(art: &Art, value: &mut f32, min: f32, max: f32, r: Rect) {
         area.w,
         area.h,
     );
+    if r.contains(mouse()) && is_mouse_button_down(MouseButton::Left) {
+        *value = min + (max - min) * ((mouse().x - r.x) / r.w).clamp(0., 1.);
+    }
+    let fraction = ((*value - min) / range).clamp(0., 1.);
+    // Draw progress after updating the value so the thumb follows the pointer
+    // in the same frame.
     art.image_progress(
         if hover {
             "ui slider/horizontal_hover_bar2"
@@ -123,10 +172,6 @@ fn slider(art: &Art, value: &mut f32, min: f32, max: f32, r: Rect) {
         area,
         fraction,
     );
-    if r.contains(mouse()) && is_mouse_button_down(MouseButton::Left) {
-        *value = min + (max - min) * ((mouse().x - r.x) / r.w).clamp(0., 1.);
-    }
-    let _ = art;
 }
 fn option(art: &Art, text: &str, r: Rect, selected: bool) -> bool {
     control(art, text, r, selected, false)
@@ -163,7 +208,7 @@ fn control(art: &Art, text: &str, r: Rect, selected: bool, check: bool) -> bool 
 }
 pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     let tr = |s: &str| story.translate(s, &p.lang);
-    art.text(&tr("Options"), 60., 70., 40, BLUE);
+    art.menu_title(&tr("Options"));
     let mut language = false;
     for (x, title) in [(370., "Display"), (650., "Rollback Side"), (930., "Skip")] {
         art.label(&tr(title), x, 160., 220., 28, BLUE);
@@ -280,7 +325,7 @@ pub fn settings(art: &Art, story: &Story, p: &mut Preferences) -> bool {
     language
 }
 pub fn languages(art: &Art, story: &Story, p: &mut Preferences) -> bool {
-    art.text(&story.translate("Language", &p.lang), 60., 70., 40, BLUE);
+    art.menu_title(&story.translate("Language", &p.lang));
     for (i, (id, label)) in [
         ("", "English"),
         ("es", "Español"),
@@ -357,6 +402,25 @@ mod tests {
         assert!(!p.skip_unseen);
     }
     #[test]
+    fn normalization_repairs_invalid_persisted_values() {
+        let mut p = Preferences {
+            volume: f32::NAN,
+            sound_volume: 2.0,
+            text_cps: -1.0,
+            afm_time: f32::INFINITY,
+            rollback_side: "invalid".into(),
+            read: vec![4, 2, 4],
+            ..Default::default()
+        };
+        p.normalize();
+        assert_eq!(p.volume, 0.8);
+        assert_eq!(p.sound_volume, 1.0);
+        assert_eq!(p.text_cps, 0.0);
+        assert_eq!(p.afm_time, 15.0);
+        assert_eq!(p.rollback_side, "disable");
+        assert_eq!(p.read, vec![2, 4]);
+    }
+    #[test]
     fn legacy_migration_preserves_progress() {
         let mut p = Preferences {
             lang: "es".into(),
@@ -405,7 +469,20 @@ mod tests {
         assert!(!p.mark_read(state.pc));
         let restored: Preferences =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        let serialized = serde_json::to_string(&p).unwrap();
+        assert!(!serialized.contains("read_index"));
         assert!(restored.can_skip(previous.pc));
+        let mut restored = restored;
+        assert!(restored.mark_read(usize::MAX));
+        assert!(restored.can_skip(previous.pc));
+        assert_eq!(
+            restored
+                .read
+                .iter()
+                .filter(|pc| **pc == previous.pc)
+                .count(),
+            1
+        );
         while state.run(&story) != crate::engine::Stop::Say {}
         assert!(!restored.can_skip(state.pc));
     }

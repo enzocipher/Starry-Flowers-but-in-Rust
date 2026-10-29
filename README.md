@@ -1,5 +1,7 @@
 # Starry Flowers — port local a Rust para Windows
 
+Este repositorio contiene la versión de PC. El port nativo para PSP se mantiene de forma independiente en [Starry-Flowers-PSP](https://github.com/enzocipher/Starry-Flowers-PSP).
+
 Adaptación del juego Starry Flowers 1.7.4 de NomnomNami. Ejecuta la historia con un motor nativo en Rust y Macroquad: no utiliza Python ni Ren'Py en tiempo de ejecución. Los textos, ilustraciones, música y traducciones proceden de la copia original de esta carpeta.
 
 "Es el mismo juego, pero una versión inferior"
@@ -35,6 +37,11 @@ python tools/compile_story.py
 ```
 
 `story.json` se integra en el ejecutable al compilar. Python se usa únicamente para preparar recursos. `Cargo.lock` fija las dependencias. La implementación gráfica usa [Macroquad](https://docs.rs/macroquad/0.4.16/macroquad/).
+
+## CI
+
+En cada push y pull request, GitHub Actions prueba el motor y el layout de texto en un checkout limpio. Ese job no necesita `assets/` y ejecuta `cargo test --no-default-features --lib`; las pruebas que verifican archivos originales quedan bajo la feature `original-assets`, activa por defecto para las pruebas locales (`cargo test`). La CI no compila el ejecutable de escritorio porque su icono y recursos están ignorados por Git.
+
 
 ## Alcance y diferencias
 

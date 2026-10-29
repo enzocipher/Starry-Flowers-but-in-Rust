@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $taskRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $taskPrefix = $taskRoot + [IO.Path]::DirectorySeparatorChar
-$taskFolders = @('target-final', 'target', 'psp/target', 'psp/test-emulator', 'assets/gui/credits')
+$taskFolders = @('target-final', 'target', 'assets/gui/credits')
 $taskTargets = @()
 foreach ($taskRelative in $taskFolders) {
     $taskCandidate = Join-Path $taskRoot $taskRelative
@@ -15,15 +15,7 @@ foreach ($taskRelative in $taskFolders) {
 }
 $taskTargets += @(Get-ChildItem -LiteralPath $taskRoot -File -Filter 'smoke*.png')
 $taskTargets += @(Get-ChildItem -LiteralPath (Join-Path $taskRoot 'dist/StarryFlowersRust') -File -Filter 'smoke*.png' -ErrorAction SilentlyContinue)
-$taskTargets += @(Get-Item -LiteralPath (Join-Path $taskRoot 'layout-audit.txt'), (Join-Path $taskRoot 'psp/build.log') -ErrorAction SilentlyContinue)
-$taskKeep = @('StarryFlowers.iso', 'EBOOT.PBP', 'ICON0.PNG', 'PIC1.PNG')
-$taskTargets += @(Get-ChildItem -LiteralPath (Join-Path $taskRoot 'psp/dist') -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin $taskKeep })
-$taskManifest = Join-Path $taskRoot 'psp/dist/DATA/MANIFEST.JSON'
-if (Test-Path -LiteralPath $taskManifest) {
-    $taskActive = (Get-Content -LiteralPath $taskManifest -Raw | ConvertFrom-Json).files
-    if (-not $taskActive -or 'MANIFEST.JSON' -notin $taskActive) { throw 'Invalid resource manifest' }
-    $taskTargets += @(Get-ChildItem -LiteralPath (Split-Path $taskManifest) -File | Where-Object { $_.Name -notin $taskActive })
-}
+$taskTargets += @(Get-Item -LiteralPath (Join-Path $taskRoot 'layout-audit.txt') -ErrorAction SilentlyContinue)
 foreach ($taskItem in $taskTargets) {
     if (-not $taskItem.FullName.StartsWith($taskPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Outside workspace: $($taskItem.FullName)" }
 }

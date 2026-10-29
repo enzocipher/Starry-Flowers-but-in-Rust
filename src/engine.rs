@@ -64,6 +64,10 @@ impl Story {
             .cloned()
             .unwrap_or_else(|| text.to_owned())
     }
+
+    pub fn valid_state(&self, state: &State) -> bool {
+        state.pc < self.ops.len() && state.stack.iter().all(|pc| *pc <= self.ops.len())
+    }
 }
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct Sprite {
@@ -139,7 +143,7 @@ impl State {
         }
     }
     pub fn start(&mut self, story: &Story, label: &str) {
-        self.pc = story.labels[label];
+        self.pc = story.labels.get(label).copied().unwrap_or(0);
         self.stack.clear();
         self.sprites.clear();
         self.nvl.clear();
@@ -290,7 +294,11 @@ impl State {
                     if op.op == "call" {
                         self.stack.push(self.pc)
                     }
-                    self.pc = story.labels[&op.text];
+                    if let Some(target) = story.labels.get(&op.text) {
+                        self.pc = *target;
+                    } else {
+                        return Stop::End;
+                    }
                 }
                 "return" => {
                     if let Some(pc) = self.stack.pop() {
@@ -403,18 +411,69 @@ mod tests {
     #[test]
     fn about_preserves_original_credit_groups() {
         let story = Story::load();
-        let text = story.credits.iter().map(|c| format!("{}\n{}", c.heading, c.body)).collect::<Vec<_>>().join("\n");
-        for name in ["NomnomNami","Marlene Bellissimo","rinphonny","Yuri Akuto","Antonio Moss","Rypher","Nika Klag","Fah Braccini","Zweelee","storyteller613","Naamk","Gu Lyencha","KyleHeren","Bánh","Whateverzone","Animoose","xionvee","PyTom","StomachGod","Faye DeForêt","Tassia Turney"] {
+        let text = story
+            .credits
+            .iter()
+            .map(|c| format!("{}\n{}", c.heading, c.body))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for name in [
+            "NomnomNami",
+            "Marlene Bellissimo",
+            "rinphonny",
+            "Yuri Akuto",
+            "Antonio Moss",
+            "Rypher",
+            "Nika Klag",
+            "Fah Braccini",
+            "Zweelee",
+            "storyteller613",
+            "Naamk",
+            "Gu Lyencha",
+            "KyleHeren",
+            "Bánh",
+            "Whateverzone",
+            "Animoose",
+            "xionvee",
+            "PyTom",
+            "StomachGod",
+            "Faye DeForêt",
+            "Tassia Turney",
+        ] {
             assert!(text.contains(name), "Missing original credit: {}", name);
         }
-        assert_eq!(story.credits.iter().filter(|p| p.heading == "Translations").count(), 2);
-        assert!(text.contains("Testing and Feedback") && text.contains("Special Thanks") && text.contains("Supported by Patrons"));
+        assert_eq!(
+            story
+                .credits
+                .iter()
+                .filter(|p| p.heading == "Translations")
+                .count(),
+            2
+        );
+        assert!(
+            text.contains("Testing and Feedback")
+                && text.contains("Special Thanks")
+                && text.contains("Supported by Patrons")
+        );
+    }
+
+    #[test]
+    fn save_position_must_point_to_a_resumable_operation() {
+        let story = Story::load();
+        let mut state = State::default();
+        state.start(&story, "start");
+        assert!(story.valid_state(&state));
+        state.pc = 0;
+        assert!(story.valid_state(&state));
+        state.pc = story.ops.len() + 1;
+        assert!(!story.valid_state(&state));
     }
 
     #[test]
     fn original_inline_symbols_resolve_for_story_and_translations() {
         let story = Story::load();
         for symbol in story.inline_symbols.values() {
+            #[cfg(feature = "original-assets")]
             assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("assets")
                 .join(&story.images[&symbol.image])

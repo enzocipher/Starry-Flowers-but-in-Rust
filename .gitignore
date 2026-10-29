@@ -1,5 +1,8 @@
 /target/
+/target-final/
 /assets/
 /dist/
 /smoke*.png
+/layout-audit.txt
+.idea/
 __pycache__/

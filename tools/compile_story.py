@@ -83,6 +83,10 @@ for filename in ['script.rpy','extra.rpy','credits.rpy']:
 
 images={p.stem: p.relative_to(assets).as_posix() for p in (assets/'images').rglob('*.png')}
 images.update({'ui '+p.relative_to(assets/'gui').with_suffix('').as_posix():p.relative_to(assets).as_posix() for p in (assets/'gui').rglob('*.png')})
+for lang in ('kor',):
+    localized_logo = assets / 'tl' / lang / 'images' / 'titlelogo.png'
+    if localized_logo.is_file():
+        images['titlelogo_' + lang] = localized_logo.relative_to(assets).as_posix()
 text_images={}
 for filename in ['script.rpy','credits.rpy']:
     for line in (assets/filename).read_text(encoding='utf-8-sig').splitlines():

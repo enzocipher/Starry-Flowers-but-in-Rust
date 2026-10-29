@@ -1,15 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod engine;
 mod layout;
+#[cfg(test)]
+mod optimization_bench;
 mod preferences;
 use engine::*;
 use macroquad::{audio::*, prelude::*};
 use preferences::{punch_offset, visible_text, Preferences};
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 const INK: Color = Color::new(0.22, 0.21, 0.36, 1.0);
 const BLUE: Color = Color::new(0.37, 0.55, 0.85, 1.0);
-#[cfg(test)]
+const PERF_WARMUP_FRAMES: usize = 60;
+const PERF_SAMPLE_FRAMES: usize = 360;
+#[cfg(all(test, feature = "original-assets"))]
 mod render_tests {
     use super::*;
     #[test]
@@ -119,23 +123,177 @@ fn write_json<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
     std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())
 }
+fn persist_preferences(prefs: &Preferences, perf_smoke: bool) {
+    if !perf_smoke {
+        let _ = write_json("preferences.json", prefs);
+    }
+}
 fn read_json<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
     serde_json::from_slice(&std::fs::read(save_dir().join(name)).ok()?).ok()
 }
+fn read_save(name: &str, story: &Story) -> Option<State> {
+    let state: State = read_json(name)?;
+    story.valid_state(&state).then_some(state)
+}
 struct Art {
-    layouts: std::cell::RefCell<HashMap<layout::Key, Vec<layout::Line>>>,
+    layouts: std::cell::RefCell<HashMap<layout::Key, Arc<[layout::Line]>>>,
+    layout_metrics: Option<LayoutCacheMetrics>,
     textures: HashMap<String, Texture2D>,
     font: Font,
     inline_symbols: HashMap<char, InlineSymbol>,
     sounds: HashMap<String, Sound>,
     music: String,
-    stamps: HashMap<String, (String, f64)>,
+    stamps: HashMap<String, SpriteStamp>,
     animate: bool,
     font_lang: String,
     face_history: HashMap<String, (String, String, f64)>,
     ui_lang: String,
     ui: HashMap<String, String>,
     fonts: HashMap<String, Font>,
+}
+#[derive(Default)]
+struct LayoutCacheMetrics {
+    hits: std::cell::Cell<u64>,
+    misses: std::cell::Cell<u64>,
+}
+#[derive(Serialize)]
+struct PerfSmokeReport {
+    mode: String,
+    warmup_frames: usize,
+    sample_count: usize,
+    frame_time_source: &'static str,
+    frame_time_includes_vsync: bool,
+    frametime_mean_ms: f64,
+    frametime_p95_ms: f64,
+    frametime_p99_ms: f64,
+    frametime_max_ms: f64,
+    layout_cache_hits: u64,
+    layout_cache_misses: u64,
+    samples_ms: Vec<f32>,
+}
+fn percentile(sorted: &[f64], percent: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = ((percent.clamp(0.0, 100.0) / 100.0) * sorted.len() as f64).ceil() as usize;
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+#[cfg(test)]
+mod perf_smoke_tests {
+    use super::percentile;
+
+    #[test]
+    fn percentile_uses_nearest_rank_and_clamps_endpoints() {
+        let sorted = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(percentile(&sorted, 0.0), 1.0);
+        assert_eq!(percentile(&sorted, 50.0), 2.0);
+        assert_eq!(percentile(&sorted, 95.0), 4.0);
+        assert_eq!(percentile(&sorted, 100.0), 4.0);
+        assert_eq!(percentile(&[], 95.0), 0.0);
+    }
+}
+fn perf_report_path(mode: &str) -> PathBuf {
+    let safe_mode: String = mode
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::env::temp_dir().join(format!("perf-smoke-{safe_mode}.json"))
+}
+fn save_perf_report(mode: &str, samples_ms: Vec<f32>, metrics: &LayoutCacheMetrics) -> PathBuf {
+    let mut sorted: Vec<f64> = samples_ms.iter().map(|v| *v as f64).collect();
+    sorted.sort_by(f64::total_cmp);
+    let mean = if sorted.is_empty() {
+        0.0
+    } else {
+        sorted.iter().sum::<f64>() / sorted.len() as f64
+    };
+    let report = PerfSmokeReport {
+        mode: mode.to_owned(),
+        warmup_frames: PERF_WARMUP_FRAMES,
+        sample_count: samples_ms.len(),
+        frame_time_source: "macroquad get_frame_time() per completed frame",
+        frame_time_includes_vsync: true,
+        frametime_mean_ms: mean,
+        frametime_p95_ms: percentile(&sorted, 95.0),
+        frametime_p99_ms: percentile(&sorted, 99.0),
+        frametime_max_ms: sorted.last().copied().unwrap_or(0.0),
+        layout_cache_hits: metrics.hits.get(),
+        layout_cache_misses: metrics.misses.get(),
+        samples_ms,
+    };
+    let path = perf_report_path(mode);
+    let bytes = serde_json::to_vec_pretty(&report).expect("serialize perf smoke report");
+    std::fs::write(&path, bytes).expect("write perf smoke report");
+    path
+}
+struct SpriteStamp {
+    attrs: Vec<String>,
+    position: String,
+    started_at: f64,
+}
+#[cfg(test)]
+mod sprite_stamp_tests {
+    use super::*;
+
+    #[test]
+    fn pastille_identity_ignores_cosmetic_attrs_but_tracks_sprite_changes() {
+        let mut sprite = Sprite {
+            tag: "pastille".into(),
+            attrs: vec!["witch".into(), "smile".into()],
+            position: "center".into(),
+        };
+        let mut stamp = SpriteStamp::new(&sprite, 1.0);
+
+        sprite.attrs[1] = "frown".into();
+        stamp.refresh_if_changed(&sprite, 2.0);
+        assert_eq!(stamp.started_at, 1.0);
+
+        sprite.attrs[0] = "pj".into();
+        stamp.refresh_if_changed(&sprite, 3.0);
+        assert_eq!(stamp.started_at, 3.0);
+
+        sprite.position = "left".into();
+        stamp.refresh_if_changed(&sprite, 4.0);
+        assert_eq!(stamp.started_at, 4.0);
+
+        sprite.tag = "witch".into();
+        sprite.attrs[0] = "angry".into();
+        stamp.refresh_if_changed(&sprite, 5.0);
+        assert_eq!(stamp.started_at, 5.0);
+    }
+}
+impl SpriteStamp {
+    fn new(sprite: &Sprite, started_at: f64) -> Self {
+        Self {
+            attrs: sprite_identity_attrs(sprite).map(str::to_owned).collect(),
+            position: sprite.position.clone(),
+            started_at,
+        }
+    }
+    fn refresh_if_changed(&mut self, sprite: &Sprite, now: f64) {
+        let same_attrs = self
+            .attrs
+            .iter()
+            .map(String::as_str)
+            .eq(sprite_identity_attrs(sprite));
+        if !same_attrs || self.position != sprite.position {
+            self.attrs = sprite_identity_attrs(sprite).map(str::to_owned).collect();
+            self.position.clone_from(&sprite.position);
+            self.started_at = now;
+        }
+    }
+}
+fn sprite_identity_attrs(sprite: &Sprite) -> impl Iterator<Item = &str> {
+    sprite.attrs.iter().map(String::as_str).filter(|attr| {
+        sprite.tag != "pastille"
+            || ["witch", "pj", "date", "manto", "work", "jacket"].contains(attr)
+    })
 }
 impl Art {
     async fn font_for(&mut self, lang: &str) {
@@ -208,23 +366,16 @@ impl Art {
         }
     }
     fn age(&mut self, s: &Sprite) -> f32 {
-        let attrs: Vec<_> = s
-            .attrs
-            .iter()
-            .filter(|attr| {
-                s.tag != "pastille"
-                    || ["witch", "pj", "date", "manto", "work", "jacket"].contains(&attr.as_str())
-            })
-            .collect();
-        let identity = format!("{attrs:?}:{}", s.position);
-        let entry = self
-            .stamps
-            .entry(s.tag.clone())
-            .or_insert((identity.clone(), get_time()));
-        if entry.0 != identity {
-            *entry = (identity, get_time());
-        }
-        (get_time() - entry.1) as f32
+        let now = get_time();
+        let stamp = if let Some(stamp) = self.stamps.get_mut(&s.tag) {
+            stamp.refresh_if_changed(s, now);
+            stamp
+        } else {
+            self.stamps
+                .entry(s.tag.clone())
+                .or_insert_with(|| SpriteStamp::new(s, now))
+        };
+        (now - stamp.started_at) as f32
     }
     fn centered(&self, text: &str, y: f32, size: u16, color: Color) {
         for (i, line) in clean_text(text).split('\n').enumerate() {
@@ -371,6 +522,55 @@ impl Art {
             );
         }
     }
+    fn frame(&self, name: &str, r: Rect, border: f32, tint: Color) {
+        let Some(texture) = self.textures.get(name) else {
+            return;
+        };
+        let sx = [0., border, texture.width() - border, texture.width()];
+        let sy = [0., border, texture.height() - border, texture.height()];
+        let bx = border.min(r.w / 2.);
+        let by = border.min(r.h / 2.);
+        let dx = [r.x, r.x + bx, r.x + r.w - bx, r.x + r.w];
+        let dy = [r.y, r.y + by, r.y + r.h - by, r.y + r.h];
+        for y in 0..3 {
+            for x in 0..3 {
+                draw_texture_ex(
+                    texture,
+                    dx[x],
+                    dy[y],
+                    tint,
+                    DrawTextureParams {
+                        source: Some(Rect::new(
+                            sx[x],
+                            sy[y],
+                            sx[x + 1] - sx[x],
+                            sy[y + 1] - sy[y],
+                        )),
+                        dest_size: Some(vec2(dx[x + 1] - dx[x], dy[y + 1] - dy[y])),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    fn menu_title(&self, text: &str) {
+        for (radius, color) in [
+            (8., Color::from_rgba(190, 219, 255, 255)),
+            (4., Color::from_rgba(80, 131, 193, 255)),
+        ] {
+            for i in 0..32 {
+                let angle = i as f32 * std::f32::consts::TAU / 32.;
+                self.text(
+                    text,
+                    320. + angle.cos() * radius,
+                    78. + angle.sin() * radius,
+                    50,
+                    color,
+                );
+            }
+        }
+        self.text(text, 320., 78., 50, WHITE);
+    }
     fn text_width(&self, text: &str, size: u16) -> f32 {
         let mut width = 0.;
         let mut run = String::new();
@@ -470,7 +670,7 @@ impl Art {
         }
         y + lines.len() as f32 * size as f32 * 1.35
     }
-    fn lines(&self, text: &str, width: f32, size: u16) -> Vec<layout::Line> {
+    fn lines(&self, text: &str, width: f32, size: u16) -> Arc<[layout::Line]> {
         let key = layout::Key {
             text: clean_text(text),
             size,
@@ -478,17 +678,24 @@ impl Art {
             font: self.font_lang.clone(),
         };
         if let Some(lines) = self.layouts.borrow().get(&key) {
-            return lines.clone();
+            if let Some(metrics) = &self.layout_metrics {
+                metrics.hits.set(metrics.hits.get() + 1);
+            }
+            return Arc::clone(lines);
         }
-        let lines = layout::wrap(&key.text, width, |s| self.text_width(s, size));
+        if let Some(metrics) = &self.layout_metrics {
+            metrics.misses.set(metrics.misses.get() + 1);
+        }
+        let lines: Arc<[layout::Line]> =
+            layout::wrap(&key.text, width, |s| self.text_width(s, size)).into();
         let mut cache = self.layouts.borrow_mut();
         if cache.len() > 300 {
             cache.clear();
         }
-        cache.insert(key, lines.clone());
+        cache.insert(key, Arc::clone(&lines));
         lines
     }
-    fn fitted(&self, text: &str, width: f32, height: f32) -> (u16, Vec<layout::Line>) {
+    fn fitted(&self, text: &str, width: f32, height: f32) -> (u16, Arc<[layout::Line]>) {
         for size in (12..=32).rev() {
             let lines = self.lines(text, width, size);
             if lines.len() as f32 * size as f32 * 1.35 <= height {
@@ -646,6 +853,7 @@ async fn scene(art: &mut Art, state: &State, story: &Story, portrait: bool, lang
             "bg starfield",
             "bg chapterbreak",
             "titlelogo",
+            "titlelogo_kor",
             "names1",
             "names2",
             "names3",
@@ -837,18 +1045,16 @@ fn mouse() -> Vec2 {
 fn button(art: &Art, label: &str, r: Rect) -> bool {
     let label = art.ui.get(label).map(String::as_str).unwrap_or(label);
     let hover = r.contains(mouse());
-    draw_rectangle(
-        r.x,
-        r.y,
-        r.w,
-        r.h,
+    art.frame(
+        "ui roundframe2",
+        r,
+        15.,
         if hover {
             Color::new(0.80, 0.88, 1., 0.97)
         } else {
             Color::new(0.96, 0.95, 1., 0.94)
         },
     );
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 2., BLUE);
     let size = if label.chars().count() > 60 { 20 } else { 26 };
     let dim = measure_text(label, Some(&art.font), size, 1.);
     art.text(
@@ -892,8 +1098,28 @@ fn text_button(art: &Art, label: &str, r: Rect, title: bool) -> bool {
         } else if hover {
             BLUE
         } else {
-            INK
+            Color::from_rgba(169, 181, 196, 255)
         },
+    );
+    hover && is_mouse_button_pressed(MouseButton::Left)
+}
+fn history_button(art: &Art, label: &str, r: Rect, enabled: bool, previous: bool) -> bool {
+    let _ = label;
+    let hover = enabled && r.contains(mouse());
+    let direction = if previous { "prev" } else { "next" };
+    let state = if !enabled {
+        "insensitive"
+    } else if hover {
+        "hover"
+    } else {
+        "idle"
+    };
+    art.image(
+        &format!("ui button/b_{direction}_{state}"),
+        r.x,
+        r.y,
+        r.w,
+        r.h,
     );
     hover && is_mouse_button_pressed(MouseButton::Left)
 }
@@ -938,6 +1164,13 @@ fn sync_prefs(p: &mut Preferences, s: &State) {
         .get("persistent.clear")
         .and_then(|v| v.as_bool())
         .unwrap_or(p.clear);
+    if s.vars
+        .get("persistent.ch0")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        p.clear = true;
+    }
     p.fave = s.fave;
     for item in &s.seen {
         if !p.seen.contains(item) {
@@ -958,6 +1191,19 @@ async fn main() {
     if let Some(dir) = candidates.into_iter().find(|p| p.join("assets").is_dir()) {
         std::env::set_current_dir(dir).unwrap();
     }
+    let args: Vec<String> = std::env::args().collect();
+    let perf_mode = args
+        .iter()
+        .find_map(|s| s.strip_prefix("--perf-smoke=").map(str::to_owned));
+    let perf_smoke = perf_mode.is_some();
+    let smoke_mode = perf_mode
+        .clone()
+        .or_else(|| {
+            args.iter()
+                .find_map(|s| s.strip_prefix("--smoke=").map(str::to_owned))
+        })
+        .unwrap_or_else(|| "dialogue".into());
+    let smoke = perf_smoke || args.iter().any(|s| s.starts_with("--smoke"));
     let story = Story::load();
     let saved_preferences: Option<serde_json::Value> = read_json("preferences.json");
     let legacy = saved_preferences
@@ -967,11 +1213,13 @@ async fn main() {
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
     prefs.migrate(legacy);
+    prefs.normalize();
     let font = load_ttf_font("assets/tl/None/Nunito-Bold.ttf")
         .await
         .expect("Missing font: keep assets next to exe");
     let mut art = Art {
         layouts: std::cell::RefCell::new(HashMap::new()),
+        layout_metrics: perf_smoke.then(LayoutCacheMetrics::default),
         textures: HashMap::new(),
         font,
         inline_symbols: story.inline_symbols.clone(),
@@ -1000,6 +1248,7 @@ async fn main() {
         "bg starfield",
         "bg chapterbreak",
         "titlelogo",
+        "titlelogo_kor",
         "titleflower",
         "ui main_menu",
         "ui game_menu",
@@ -1013,6 +1262,13 @@ async fn main() {
         art.ensure(&symbol.image, &story).await;
     }
     for name in [
+        "ui roundframe2",
+        "ui button/b_prev_idle",
+        "ui button/b_prev_hover",
+        "ui button/b_prev_insensitive",
+        "ui button/b_next_idle",
+        "ui button/b_next_hover",
+        "ui button/b_next_insensitive",
         "ui slider/horizontal_idle_bar",
         "ui slider/horizontal_idle_bar2",
         "ui slider/horizontal_hover_bar",
@@ -1048,10 +1304,6 @@ async fn main() {
     let mut reveal_all = false;
     let mut skipping = false;
     let mut hide_dialogue = false;
-    let smoke_mode = std::env::args()
-        .find_map(|s| s.strip_prefix("--smoke=").map(str::to_owned))
-        .unwrap_or_else(|| "dialogue".into());
-    let smoke = std::env::args().any(|s| s.starts_with("--smoke"));
     if std::env::args().any(|s| s == "--audit-layout") {
         let mut checked = 0;
         for lang in ["", "es"] {
@@ -1089,7 +1341,7 @@ async fn main() {
                                 "Vertical overflow: {lang} / {label} / {}",
                                 sample.pc
                             );
-                            for line in lines {
+                            for line in lines.iter() {
                                 assert!(
                                     measure_text(&line.text, Some(&art.font), size, 1.).width
                                         <= width + 0.1,
@@ -1110,6 +1362,11 @@ async fn main() {
         return;
     }
     let mut frames = 0;
+    let mut perf_samples_ms = if perf_smoke {
+        Vec::with_capacity(PERF_SAMPLE_FRAMES)
+    } else {
+        Vec::new()
+    };
     if smoke {
         state.start(&story, "start");
         for _ in 0..100 {
@@ -1210,6 +1467,17 @@ async fn main() {
         }
     }
     loop {
+        let frame_time = if perf_smoke { get_frame_time() } else { 0.0 };
+        if perf_smoke && frames > PERF_WARMUP_FRAMES {
+            perf_samples_ms.push(frame_time * 1000.0);
+            if perf_samples_ms.len() == PERF_SAMPLE_FRAMES {
+                let metrics = art.layout_metrics.as_ref().unwrap();
+                let report_path =
+                    save_perf_report(perf_mode.as_deref().unwrap(), perf_samples_ms, metrics);
+                println!("Perf smoke report: {}", report_path.display());
+                return;
+            }
+        }
         art.font_for(&prefs.lang).await;
         if art.ui_lang != prefs.lang {
             art.ui = story
@@ -1225,7 +1493,11 @@ async fn main() {
             reveal_all = false;
         }
         if page == Page::Game && stop == Stop::Say {
-            text_elapsed += get_frame_time() as f64;
+            text_elapsed += if perf_smoke {
+                frame_time as f64
+            } else {
+                get_frame_time() as f64
+            };
         }
         if smoke {
             reveal_all = true;
@@ -1277,7 +1549,12 @@ async fn main() {
             state.music = "romance".into();
             art.image("bg starfield", 0., -560., 1280., 1280.);
             art.particles("mmblossoms", &story).await;
-            art.image("titlelogo", 280., 72., 720., 360.);
+            let title_logo = if prefs.lang == "kor" {
+                "titlelogo_kor"
+            } else {
+                "titlelogo"
+            };
+            art.image(title_logo, 280., 72., 720., 360.);
 
             for (i, label) in ["Start", "Continue", "Options", "Quit"].iter().enumerate() {
                 if i > 0 {
@@ -1314,7 +1591,7 @@ async fn main() {
                             page = Page::Settings;
                         }
                         _ => {
-                            let _ = write_json("preferences.json", &prefs);
+                            persist_preferences(&prefs, perf_smoke);
                             return;
                         }
                     }
@@ -1359,7 +1636,7 @@ async fn main() {
             // A displayed line is read even when the player has not advanced yet.
             // Persist immediately so closing the window preserves skip eligibility.
             if !smoke && stop == Stop::Say && text_complete && prefs.mark_read(state.pc) {
-                let _ = write_json("preferences.json", &prefs);
+                persist_preferences(&prefs, perf_smoke);
             }
             if !hide_dialogue && state.nvl_mode && stop == Stop::Say {
                 art.image("ui nvl", 0., 0., 1280., 720.);
@@ -1599,7 +1876,7 @@ async fn main() {
             if advance && page == Page::Game {
                 if stop == Stop::Say {
                     if prefs.mark_read(state.pc) && !smoke {
-                        let _ = write_json("preferences.json", &prefs);
+                        persist_preferences(&prefs, perf_smoke);
                     }
                     history.push(state.clone());
                     if history.len() > 250 {
@@ -1619,7 +1896,7 @@ async fn main() {
                 }
                 if stop == Stop::End {
                     sync_prefs(&mut prefs, &state);
-                    let _ = write_json("preferences.json", &prefs);
+                    persist_preferences(&prefs, perf_smoke);
                     page = Page::Title;
                     state.music.clear();
                 }
@@ -1671,7 +1948,7 @@ async fn main() {
                     ) {
                         let Some(destination) = destination else {
                             sync_prefs(&mut prefs, &state);
-                            let _ = write_json("preferences.json", &prefs);
+                            persist_preferences(&prefs, perf_smoke);
                             return;
                         };
                         if *destination == Page::Game {
@@ -1689,23 +1966,20 @@ async fn main() {
                         }
                         if *destination == Page::Title {
                             sync_prefs(&mut prefs, &state);
-                            let _ = write_json("preferences.json", &prefs);
+                            persist_preferences(&prefs, perf_smoke);
                         }
                         page = *destination;
                     }
                 }
             }
             if page == Page::Save || page == Page::Load {
-                art.text(
+                art.menu_title(&story.translate(
                     if page == Page::Save { "Save" } else { "Load" },
-                    100.,
-                    85.,
-                    40,
-                    INK,
-                );
+                    &prefs.lang,
+                ));
                 for slot in 1..=6 {
                     let name = format!("slot{slot}.json");
-                    let saved: Option<State> = read_json(&name);
+                    let saved: Option<State> = read_save(&name, &story);
                     let preview = saved
                         .as_ref()
                         .map(|s| {
@@ -1727,10 +2001,15 @@ async fn main() {
                                 Err(e) => format!("Error: {e}"),
                             };
                             notice_until = get_time() + 3.;
-                            let _ = write_json("preferences.json", &prefs);
+                            persist_preferences(&prefs, perf_smoke);
                         } else if let Some(saved) = saved {
                             state = saved;
-                            let op = &story.ops[state.pc - 1];
+                            let Some(op) = state.pc.checked_sub(1).and_then(|pc| story.ops.get(pc))
+                            else {
+                                notification = "Invalid save file".into();
+                                notice_until = get_time() + 3.;
+                                continue;
+                            };
                             stop = match op.op.as_str() {
                                 "menu" => Stop::Menu,
                                 "dress" => Stop::Dress,
@@ -1752,10 +2031,10 @@ async fn main() {
                     page = Page::Settings;
                 }
             } else if page == Page::Help {
-                art.text(&story.translate("Help", &prefs.lang), 60., 70., 40, BLUE);
+                art.menu_title(&story.translate("Help", &prefs.lang));
                 art.wrap("Enter / Space / Click: advance dialogue.\nCtrl: skip read text. Tab: toggle skipping.\nLeft / Backspace / Mouse wheel up: rollback.\nEscape / Right click: game menu. F11: fullscreen.\nH: hide dialogue.\nOptions: text speed, auto-forward and audio.",370.,165.,800.,28);
             } else if page == Page::About {
-                art.text(&story.translate("About", &prefs.lang), 60., 70., 40, BLUE);
+                art.menu_title(&story.translate("About", &prefs.lang));
                 let count = story.credits.len();
                 if count > 0 {
                     if button(&art, "Previous", Rect::new(370., 610., 240., 50.))
@@ -1787,7 +2066,7 @@ async fn main() {
                     );
                 }
             } else if page == Page::History {
-                art.text(&story.translate("History", &prefs.lang), 60., 70., 40, BLUE);
+                art.menu_title(&story.translate("History", &prefs.lang));
                 let start = history.len().saturating_sub(5 + history_offset);
                 let end = (start + 5).min(history.len());
                 let entries: Vec<_> = history[start..end]
@@ -1812,13 +2091,32 @@ async fn main() {
                 for (entry, text) in entries {
                     let lines = art.lines(&text, 600., size);
                     art.speaker_sized(&entry.who, character_name(&entry.who), 370., top, 24);
+                    let height = (lines.len() as f32 * size as f32 * 1.35).max(32.);
+                    art.frame(
+                        "ui roundframe2",
+                        Rect::new(572., top - size as f32 - 5., 638., height + 16.),
+                        15.,
+                        WHITE,
+                    );
                     art.flow(&lines, usize::MAX, 590., top, size, INK);
                     top += (lines.len() as f32 * size as f32 * 1.35).max(32.) + 20.;
                 }
-                if button(&art, "Previous", Rect::new(380., 590., 250., 55.)) {
+                if history_button(
+                    &art,
+                    "Previous",
+                    Rect::new(716., 600., 48., 48.),
+                    history_offset < history.len().saturating_sub(5),
+                    true,
+                ) {
                     history_offset = (history_offset + 5).min(history.len().saturating_sub(5));
                 }
-                if button(&art, "Next", Rect::new(700., 590., 250., 55.)) {
+                if history_button(
+                    &art,
+                    "Next",
+                    Rect::new(796., 600., 48., 48.),
+                    history_offset > 0,
+                    false,
+                ) {
                     history_offset = history_offset.saturating_sub(5);
                 }
             } else if page == Page::Gallery {
@@ -1884,7 +2182,7 @@ async fn main() {
                 true,
             ) || is_key_pressed(KeyCode::Escape)
             {
-                let _ = write_json("preferences.json", &prefs);
+                persist_preferences(&prefs, perf_smoke);
                 page = if page == Page::Language {
                     Page::Settings
                 } else {
@@ -1902,10 +2200,15 @@ async fn main() {
         art.audio(&mut state, &prefs).await;
         set_default_camera();
         frames += 1;
+        if perf_smoke && frames == PERF_WARMUP_FRAMES {
+            let metrics = art.layout_metrics.as_ref().unwrap();
+            metrics.hits.set(0);
+            metrics.misses.set(0);
+        }
         if smoke && smoke_mode == "shake" && frames == 1 {
             get_screen_data().export_png("smoke-shake-motion.png");
         }
-        if smoke && frames >= 30 {
+        if smoke && !perf_smoke && frames >= 30 {
             get_screen_data().export_png(&format!("smoke-{smoke_mode}.png"));
             return;
         }
